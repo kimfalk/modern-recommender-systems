@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/yourusername/modern-recommender-systems)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/kimfalk/modern-recommender-systems)
 
 Code examples and implementations for **"Modern Recommender Systems"** published by Manning Publications.
 
@@ -25,6 +25,7 @@ This book provides a comprehensive guide to building modern recommender systems,
 - Deploying recommender systems at scale
 - A/B testing and online evaluation strategies
 
+read more on manning.com
 ## 🚀 Quick Start
 
 ### Local Installation
