@@ -35,33 +35,46 @@ class VectorQuantizerEMA(nn.Module):
         # Convert to numpy for Sklearn
         data_np = data.detach().cpu().numpy()
         
-        # Check for degenerate data
         if data_np.std() < 1e-6:
-            print(f"    ⚠️  WARNING: Data has very low variance!")
-            print(f"    Using random initialization")
+            print(f"    ⚠️  Low variance, using random init")
             centroids = torch.randn(
                 self.num_embeddings,
                 self.embedding_dim,
                 device=data.device,
                 dtype=data.dtype
-            ) * 0.1
+            ) * data_np.std()
         else:
-            # Run K-means
+            # NORMALIZE for K-means (it works better on unit sphere)
+            data_normalized = data_np / (np.linalg.norm(data_np, axis=1, keepdims=True) + 1e-8)
+            
+            # Run K-means on normalized data
             kmeans = KMeans(
                 n_clusters=self.num_embeddings,
                 n_init=10,
                 max_iter=300,
-                random_state=42,
-                verbose=0
+                random_state=42
             )
+            kmeans.fit(data_normalized)
             
-            kmeans.fit(data_np)
+            # Get normalized centroids
+            centroids_normalized = kmeans.cluster_centers_
             
-            centroids = torch.tensor(
-                kmeans.cluster_centers_,
-                device=data.device,
-                dtype=data.dtype
-            )
+            # DENORMALIZE: Scale centroids back to original data scale
+            original_norms = np.linalg.norm(data_np, axis=1)
+            avg_norm = original_norms.mean()
+            
+            # Scale normalized centroids to match original data magnitude
+            centroids = centroids_normalized * avg_norm
+            
+            centroids = torch.tensor(centroids, device=data.device, dtype=data.dtype)
+            
+            print(f"    K-means: {kmeans.n_iter_} iterations")
+            print(f"    Centroids: mean={centroids.mean():.4f}, std={centroids.std():.4f}")
+        
+        self.embedding.data.copy_(centroids)
+        self.cluster_size.data.fill_(1.0)
+        self.embed_avg.data.copy_(centroids)
+
         return centroids
     
     def init_codebook(self, data):
@@ -81,37 +94,74 @@ class VectorQuantizerEMA(nn.Module):
         self.embed_avg.data.copy_(centroids) 
 
     def forward(self, inputs):
+        # input_shape = inputs.shape
+        # flat_input = inputs.view(-1, self.embedding_dim)
+        
+        # # 1. Distances
+        # distances = (torch.sum(flat_input**2, dim=1, keepdim=True) 
+        #             + torch.sum(self.embedding**2, dim=1) 
+        #             - 2 * torch.matmul(flat_input, self.embedding.t()))
+            
+        # # 2. Encoding
+        # encoding_indices = torch.argmin(distances, dim=1).unsqueeze(1)
+        
+        # encodings = torch.zeros(encoding_indices.shape[0], self.num_embeddings, device=inputs.device)
+        # encodings.scatter_(1, encoding_indices, 1)
+        
+        # # 3. Quantize (Using F.embedding)
+        # quantized = F.embedding(encoding_indices.squeeze(1), self.embedding).view(input_shape)
+        
+        
+        # if self.training: # 4. TRAINING ONLY: Update Codebook via EMA
+        #     self.ema_update_codebook(encodings, flat_input)
+            
+        # # 5. Loss & STE
+        # e_latent_loss = F.mse_loss(quantized.detach(), inputs)
+        # q_latent_loss = F.mse_loss(quantized, inputs.detach())
+        # loss = q_latent_loss + self.commitment_cost * e_latent_loss
+
+        # quantized = inputs + (quantized - inputs).detach()
+        
+        # return quantized, loss, encoding_indices
+
         input_shape = inputs.shape
         flat_input = inputs.view(-1, self.embedding_dim)
         
-        # 1. Distances
-        distances = (torch.sum(flat_input**2, dim=1, keepdim=True) 
-                    + torch.sum(self.embedding**2, dim=1) 
-                    - 2 * torch.matmul(flat_input, self.embedding.t()))
-            
-        # 2. Encoding
+        # Calculate distances
+        distances = (
+            torch.sum(flat_input ** 2, dim=1, keepdim=True) +
+            torch.sum(self.embedding ** 2, dim=1) -
+            2 * torch.matmul(flat_input, self.embedding.t())
+        )
+        
+        # Find nearest
         encoding_indices = torch.argmin(distances, dim=1).unsqueeze(1)
         
-        encodings = torch.zeros(encoding_indices.shape[0], self.num_embeddings, device=inputs.device)
+        # Quantize
+        encodings = torch.zeros(
+            encoding_indices.shape[0],
+            self.num_embeddings,
+            device=inputs.device
+        )
         encodings.scatter_(1, encoding_indices, 1)
+        quantized = torch.matmul(encodings, self.embedding).view(input_shape)
         
-        # 3. Quantize (Using F.embedding)
-        quantized = F.embedding(encoding_indices.squeeze(1), self.embedding).view(input_shape)
+        # Update codebook
+        if self.training:
+            self._ema_update(encodings, flat_input)
         
+        e_latent_loss = F.mse_loss(quantized.detach(), inputs)  # Encoder commitment
+        q_latent_loss = F.mse_loss(quantized, inputs.detach())  # Codebook loss
         
-        if self.training: # 4. TRAINING ONLY: Update Codebook via EMA
-            self.ema_update_codebook(encodings, flat_input)
-            
-        # 5. Loss & STE
-        e_latent_loss = F.mse_loss(quantized.detach(), inputs)
-        q_latent_loss = F.mse_loss(quantized, inputs.detach())
+        # Combined loss
         loss = q_latent_loss + self.commitment_cost * e_latent_loss
-
+        
+        # Straight-through estimator
         quantized = inputs + (quantized - inputs).detach()
         
-        return quantized, loss, encoding_indices
+        return quantized, loss, encoding_indices.squeeze(1)
     
-    def ema_update_codebook(self, encodings, flat_input):
+    def _ema_update(self, encodings, flat_input):
         
         dw = torch.sum(encodings, dim=0)
         self.cluster_size.data.mul_(self.decay).add_(dw, alpha=1 - self.decay)

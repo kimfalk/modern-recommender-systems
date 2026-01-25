@@ -9,13 +9,22 @@ from recsys.semantic_ids.vector_quantizer import VectorQuantizerEMA
 
 class SemanticIDPipeline:
 
-    def __init__(self, codebook_sizes=[8, 32, 128], internal_dim=64):
+    def __init__(self, 
+                 codebook_sizes=[8, 32, 128], internal_dim=64):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
         print("Loading BERT...")
-        self.text_encoder = SentenceTransformer('all-MiniLM-L6-v2') 
-        # self.text_encoder = SentenceTransformer('paraphrase-multilingual-mpnet-base-v2') #
+                # CURRENT (fast, lower quality)
+        # self.text_encoder = SentenceTransformer('all-MiniLM-L6-v2')
+
+        # BETTER (slower, higher quality)
+        # self.text_encoder = SentenceTransformer('all-mpnet-base-v2')
+
+        # BEST (slow, best quality)
+        self.text_encoder = SentenceTransformer('intfloat/e5-large-v2')
         bert_dim = self.text_encoder.get_sentence_embedding_dimension()
         
+        self.codebook_sizes = codebook_sizes
         self.rqvae = RQVAE(bert_dim, internal_dim, codebook_sizes).to(self.device)
         self.optimizer = optim.Adam(self.rqvae.parameters(), lr=1e-3)
 
@@ -85,6 +94,38 @@ class SemanticIDPipeline:
                 
                 epoch_recon += recon_loss.item()
                 epoch_vq += vq_loss.item()
+
+                # Print every 25 epochs
+            if (epoch + 1) % 25 == 0:
+                print(f"\nEpoch {epoch+1}:")
+                print(f"  Loss: {avg_loss:.6f}")
+                print(f"  Recon: {avg_recon:.6f}")
+                print(f"  VQ: {avg_vq:.6f}")
+                
+                # Check unique semantic IDs
+                with torch.no_grad():
+                    _, _, all_codes = self.rqvae(data)
+                    
+                    # Convert to tuples
+                    semantic_ids = [
+                        tuple(c.cpu().numpy().tolist()) 
+                        for c in all_codes
+                    ]
+                    unique_ids = len(set(semantic_ids))
+                    
+                    print(f"  Unique semantic IDs: {unique_ids}")
+                    
+                    # Check each level
+                    for level in range(all_codes.shape[1]):
+                        level_codes = all_codes[:, level]
+                        unique = len(torch.unique(level_codes))
+                        total = self.codebook_sizes[level]
+                        print(f"  Level {level+1}: {unique}/{total} codes ({unique/total*100:.1f}%)")
+                
+                # Stop if VQ loss is too low
+                if avg_vq < 1e-6:
+                    print(f"\n⚠️  VQ loss collapsed! Stopping training.")
+                    break
                 
             # Average losses
             avg_loss = epoch_loss / num_batches
@@ -109,8 +150,13 @@ class SemanticIDPipeline:
         df['semantic_id'] = [tuple(c) for c in codes.cpu().numpy().tolist()]
         
         # Add Leaf ID
-        df = df.sort_values(by=['semantic_id', 'title'])
-        df['leaf_id'] = df.groupby('semantic_id').cumcount()
+        # Handle both 'title' and 'Title' column names
+        title_col = 'Title' if 'Title' in df.columns else 'title'
+        # Create temporary string version of semantic_id for sorting and grouping
+        df['_semantic_id_str'] = df['semantic_id'].astype(str)
+        df = df.sort_values(by=['_semantic_id_str', title_col])
+        df['leaf_id'] = df.groupby('_semantic_id_str').cumcount()
+        df = df.drop(columns=['_semantic_id_str'])
         df['final_id'] = df.apply(lambda x: x['semantic_id'] + (x['leaf_id'],), axis=1)
         
         return df

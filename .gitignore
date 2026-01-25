@@ -29,6 +29,7 @@ data/raw/*
 data/processed/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+notebooks/data/*
 *.csv
 *.parquet
 *.pkl
@@ -67,3 +68,4 @@ logs/
 .pytest_cache/
 .coverage
 htmlcov/
+notebooks/data/ml-100k/allbut.pl

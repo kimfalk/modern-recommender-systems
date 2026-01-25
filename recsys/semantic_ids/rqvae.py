@@ -30,7 +30,25 @@ class RQVAE(nn.Module):
             nn.ReLU(),
             nn.Linear(embed_dim, embed_dim)
         )
+        self._init_encoder()
         
+    def _init_encoder(self):
+        """Initialize encoder to approximately preserve input scale."""
+        with torch.no_grad():
+            # First linear layer: small weights
+            nn.init.xavier_uniform_(self.encoder[0].weight, gain=1.0)
+            nn.init.zeros_(self.encoder[0].bias)
+            
+            # Second linear layer: small weights
+            nn.init.xavier_uniform_(self.encoder[2].weight, gain=1.0)
+            nn.init.zeros_(self.encoder[2].bias)
+            
+            # Decoder: similar
+            nn.init.xavier_uniform_(self.decoder[0].weight, gain=0.5)
+            nn.init.zeros_(self.decoder[0].bias)
+            nn.init.xavier_uniform_(self.decoder[2].weight, gain=0.5)
+            nn.init.zeros_(self.decoder[2].bias)
+    
     def forward(self, x):
         z = self.encoder(x)
         # z = F.normalize(z, p=2, dim=1)
