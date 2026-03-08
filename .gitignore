@@ -63,9 +63,14 @@ ENV/
 # Logs
 logs/
 *.log
-
+/notebooks/**/*.png
 # Testing
 .pytest_cache/
 .coverage
 htmlcov/
 notebooks/data/ml-100k/allbut.pl
+
+# ML Flow
+mlflow.db
+mlflow_artifacts
+mlruns

@@ -10,28 +10,26 @@ def evaluate_reconstruction(pipeline, data_tensor):
     """
     pipeline.rqvae.eval()
     with torch.no_grad():
-        # Get the latent representation (what the encoder produces)
-        latents = pipeline.rqvae.encoder(data_tensor) #A
+        # Pass through encoder, quantizers and decoder
+        reconstructed, vq_loss, codes = pipeline.rqvae(data_tensor)
         
-        # Pass through quantizers and decoder
-        reconstructed, vq_loss, codes = pipeline.rqvae(data_tensor) #B
-        
-        # Compare reconstructed latents to original latents
-        mse = F.mse_loss(reconstructed, latents) #C
+        # Compare reconstructed to ORIGINAL INPUT (not encoder output!)
+        # This is the standard VQ-VAE evaluation
+        mse = F.mse_loss(reconstructed, data_tensor)
         
         # Cosine Similarity (more interpretable)
         cos_sim = F.cosine_similarity(
             reconstructed, 
-            latents
-        ).mean() #D
+            data_tensor
+        ).mean()
         
         # Per-dimension correlation
         correlation = torch.corrcoef(
             torch.stack([reconstructed.flatten(), 
-                        latents.flatten()])
-        )[0, 1] #E
+                        data_tensor.flatten()])
+        )[0, 1]
         
-    print(f"Reconstruction Metrics (Latent Space):")
+    print(f"Reconstruction Metrics (Original Input Space):")
     print(f"  MSE: {mse:.4f} (lower is better, target < 0.1)")
     print(f"  Cosine Similarity: {cos_sim:.4f} (higher is better, target > 0.9)")
     print(f"  Correlation: {correlation:.4f} (target > 0.85)")
@@ -64,10 +62,10 @@ def test_semantic_coherence(df):
     except IndexError:
       print(f"Warning: Could not find '{title1}' or '{title2}'")
       continue
-        
+    
     # Count matching levels
     matches = sum(a == b for a, b in zip(id1, id2)) #A
-        
+    print(f"Debug: {title1} ID: {id1}, {title2} ID: {id2}, Matches: {matches}")    
     # Calculate similarity score (0 to 1)
     similarity = matches / len(id1) #B
         
@@ -140,6 +138,16 @@ def evaluate_clustering(df, embeddings):
     """
     # Extract top-level codes (first element of semantic ID)
     top_level_codes = df['semantic_id'].apply(lambda x: x[0]).values #A
+    
+    # Check if we have enough unique labels for silhouette score
+    n_unique = len(np.unique(top_level_codes))
+    if n_unique < 2:
+        print(f"⚠️  WARNING: Only {n_unique} unique cluster(s). Need at least 2 for metrics.")
+        return {
+            'silhouette_l1': -1.0,
+            'silhouette_l2': -1.0,
+            'calinski_harabasz': 0.0
+        }
     
     # Silhouette Score: measures cluster cohesion and separation
     silhouette = silhouette_score(embeddings, top_level_codes) #B

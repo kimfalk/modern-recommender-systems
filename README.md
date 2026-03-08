@@ -44,3 +44,7 @@ pip install -e .
 
 # Launch Jupyter
 jupyter notebook
+
+# To run the MLFlow browser version use
+
+mlflow ui

@@ -15,11 +15,6 @@ def run_pipeline_debug(df,
     
     print(f"Processing {len(df)} items\n")
     
-    # SIMPLE configuration
-    codebook_sizes = [8, 16, 64]  # Smaller for debugging
-    internal_dim = 256  # Smaller
-    epochs = 200
-    
     # Create pipeline
     pipeline = SemanticIDPipeline(
         codebook_sizes=codebook_sizes,
@@ -37,6 +32,20 @@ def run_pipeline_debug(df,
     print(f"\nTraining for {epochs} epochs...")
     pipeline.train(data_tensor, epochs=epochs, batch_size=64)
     
+    # CHECK BEFORE INFERENCE
+    print("\n" + "="*60)
+    print("BEFORE INFERENCE - Model State Check")
+    print("="*60)
+    pipeline.rqvae.eval()
+    with torch.no_grad():
+        _, _, codes_before = pipeline.rqvae(data_tensor)
+        
+        for level in range(codes_before.shape[1]):
+            unique = len(torch.unique(codes_before[:, level]))
+            total = pipeline.codebook_sizes[level]
+            print(f"Level {level+1}: {unique}/{total} codes ({unique/total*100:.1f}%)")
+    
+
     # Generate IDs
     print("\nGenerating semantic IDs...")
     df_enriched = pipeline.inference(df, data_tensor)
@@ -54,6 +63,7 @@ def run_pipeline_debug(df,
         print(f"Level {level+1}: {unique}/{total} codes used ({unique/total*100:.1f}%)")
     
     return df_enriched, pipeline, data_tensor
+
 
 if __name__ == "__main__":
     print("Let's get this party started!\n",

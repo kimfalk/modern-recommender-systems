@@ -103,7 +103,8 @@ def load_movielens_descriptions(data_dir='./data', auto_download=True):
             # Save to CSV for future use
             df.to_csv(descriptions_path, index=False)
             print(f"Downloaded and saved movie descriptions to {descriptions_path}")
-            
+            print(f"Loaded {len(df)} movie descriptions")
+            print(f"{df['title'].isna().sum()} descriptions missing titles")
             return df
             
         except ImportError:
