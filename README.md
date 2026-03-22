@@ -48,3 +48,57 @@ jupyter notebook
 # To run the MLFlow browser version use
 
 mlflow ui
+
+# API Keys Configuration
+Several examples in this book use external APIs that require authentication. To run these examples:
+
+Copy the example environment file
+* `cp .env.example .env`
+
+* Open .env in a text editor and add your API keys:
+```
+TMDB_API_KEY=your_actual_api_key_here
+ANOTHER_API_KEY=your_other_key_here
+```
+
+Save the file. The .env file is already in .gitignore and will not be committed to version control.
+Where to get API keys
+API_KEY: [https://developer.themoviedb.org/reference/authentication] - Sign up at https://developer.themoviedb.org/reference/authentication
+
+# Support
+* Book forum: https://livebook.manning.com/book/modern-recommender-systems
+* Issues: Please report any problems with the code at https://github.com/yourusername/modern-recommender-systems/issues
+
+# Repository Structure
+modern-recsys/
+├── README.md
+├── requirements.txt
+├── setup.py
+├── recsys/
+│   ├── __init__.py
+│   ├── framework.py          # FourStageRecommender, interfaces
+│   ├── context.py             # RecommendationContext, ScoredItem
+│   ├── retrievals/
+│   │   ├── __init__.py
+│   │   ├── base.py
+│   │   ├── popularity.py
+│   │   ├── content_based.py
+│   │   └── collaborative.py
+│   ├── scorers/
+│   │   ├── __init__.py
+│   │   ├── passthrough.py
+│   │   └── ensemble.py
+│   ├── filters/
+│   │   ├── __init__.py
+│   │   └── history.py
+│   └── rankers/
+│       ├── __init__.py
+│       └── topk.py
+├── notebooks/
+│   ├── chapter02_popularity.ipynb
+│   ├── chapter02_content_based.ipynb
+│   ├── chapter02_itemknn.ipynb
+│   └── chapter02_comparison.ipynb
+├── tests/
+└── data/
+    └── README.md  # Instructions for downloading MovieLens
