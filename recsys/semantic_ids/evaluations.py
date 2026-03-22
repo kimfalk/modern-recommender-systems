@@ -250,7 +250,7 @@ def evaluate_semantic_ids(pipeline, df, embeddings, codebook_sizes):
     
     if all(passes):
         print("\n🎉 Semantic IDs are ready for production!")
-    elif sum(passes) >= 2:
+    elif sum(passes) > 2:
         print("\n⚠️  Semantic IDs are acceptable but could be improved.")
     else:
         print("\n❌ Semantic IDs need significant improvement before production.")
