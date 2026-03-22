@@ -73,6 +73,7 @@ API_KEY: [https://developer.themoviedb.org/reference/authentication] - Sign up a
 * Issues: Please report any problems with the code at https://github.com/yourusername/modern-recommender-systems/issues
 
 # Repository Structure
+```bash
 modern-recsys/
 ├── README.md
 ├── requirements.txt
@@ -105,3 +106,4 @@ modern-recsys/
 ├── tests/
 └── data/
     └── README.md  # Instructions for downloading MovieLens
+```
