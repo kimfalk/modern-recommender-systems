@@ -48,21 +48,24 @@ jupyter notebook
 # To run the MLFlow browser version use
 
 mlflow ui
+```
 
 # API Keys Configuration
 Several examples in this book use external APIs that require authentication. To run these examples:
 
-Copy the example environment file
-* `cp .env.example .env`
+* Copy the example environment file
+```bash
+cp .env.example .env
+```
 
 * Open .env in a text editor and add your API keys:
-```
+```bash
 TMDB_API_KEY=your_actual_api_key_here
 ANOTHER_API_KEY=your_other_key_here
 ```
+* Save the file. The .env file is already in .gitignore and will not be committed to version control.
 
-Save the file. The .env file is already in .gitignore and will not be committed to version control.
-Where to get API keys
+## Where to get API keys
 API_KEY: [https://developer.themoviedb.org/reference/authentication] - Sign up at https://developer.themoviedb.org/reference/authentication
 
 # Support
@@ -70,6 +73,7 @@ API_KEY: [https://developer.themoviedb.org/reference/authentication] - Sign up a
 * Issues: Please report any problems with the code at https://github.com/yourusername/modern-recommender-systems/issues
 
 # Repository Structure
+```bash
 modern-recsys/
 ├── README.md
 ├── requirements.txt
@@ -102,3 +106,4 @@ modern-recsys/
 ├── tests/
 └── data/
     └── README.md  # Instructions for downloading MovieLens
+```

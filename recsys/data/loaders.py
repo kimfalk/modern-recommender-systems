@@ -69,6 +69,31 @@ def load_movielens(dataset='ml-100k', data_dir='./data'):
     
     return ratings, movies
 
+def load_movielens_links(dataset='ml-100k', data_dir='./data'):
+    """
+    Load MovieLens links data which contains TMDB IDs for movies.
+    
+    Args:
+        dataset: Dataset size ('ml-100k', 'ml-1m', 'ml-10m', 'ml-20m', 'ml-25m')
+        data_dir: Directory where the data is stored
+    Returns:
+        links: DataFrame with columns [movieId, imdbId, tmdbId]
+    """
+    data_path = Path(data_dir) / dataset
+    links_path = data_path / 'links.csv'
+    
+    if links_path.exists():
+        try:
+            links = pd.read_csv(links_path)
+            print(f"Loaded links data from {links_path}")
+            return links
+        except Exception as e:
+            print(f"Error loading links data: {e}")
+            return pd.DataFrame()
+    else:
+        print(f"No links file found at {links_path}")
+        return pd.DataFrame()
+    
 
 def load_movielens_descriptions(data_dir='./data', auto_download=True):
     """
@@ -126,5 +151,62 @@ def load_movielens_descriptions(data_dir='./data', auto_download=True):
             return pd.DataFrame()
     else:
         print(f"No descriptions file found at {descriptions_path}")
+        return pd.DataFrame()
+
+def load_movielens_ratings(data_dir='./data', auto_download=True):
+    """
+    Load MovieLens movie ratings from CSV files.
+    
+    Downloads movie ratings from HuggingFace datasets if not already present.
+    
+    Args:
+        data_dir: Directory where rating data is stored
+        auto_download: If True, automatically download ratings if not found
+        
+    Returns:
+        DataFrame with movie ratings
+    """
+    data_path = Path(data_dir)
+    data_path.mkdir(parents=True, exist_ok=True)
+    
+    ratings_path = data_path / 'ratings.csv'
+    
+    # Download if not exists and auto_download is enabled
+    if not ratings_path.exists() and auto_download:
+        print("Downloading movie ratings from HuggingFace...")
+        try:
+            from datasets import load_dataset
+            
+            # Load dataset from HuggingFace
+            dataset = load_dataset("Pablinho/movies-dataset")
+            
+            # Convert to pandas DataFrame
+            df = dataset['train'].to_pandas()
+            
+            # Save to CSV for future use
+            df.to_csv(ratings_path, index=False)
+            print(f"Downloaded and saved movie ratings to {ratings_path}")
+            print(f"Loaded {len(df)} movie ratings")
+            return df
+            
+        except ImportError:
+            print("HuggingFace datasets library not installed. Install with: pip install datasets")
+            return pd.DataFrame()
+        except Exception as e:
+            print(f"Failed to download ratings: {e}")
+            print("Returning empty DataFrame...")
+            return pd.DataFrame()
+    
+    if ratings_path.exists():
+        try:
+            ratings = pd.read_csv(ratings_path)
+            print(f"Loaded {len(ratings)} movie ratings from cache")
+            return ratings
+            
+        except Exception as e:
+            print(f"Error loading ratings: {e}")
+            return pd.DataFrame()
+    else:
+        print(f"No ratings file found at {ratings_path}")
         return pd.DataFrame()
 
