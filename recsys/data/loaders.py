@@ -69,7 +69,7 @@ def load_movielens(dataset='ml-100k', data_dir='./data'):
     ratings['userId'] = ratings['userId'].astype(str)
     ratings['movieId'] = ratings['movieId'].astype(str)
     movies['movieId'] = movies['movieId'].astype(str)
-    
+        
     return ratings, movies
 
 def load_movielens_links(dataset='ml-100k', data_dir='./data'):
