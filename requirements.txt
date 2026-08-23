@@ -21,6 +21,16 @@ ipywidgets>=7.6.0
 tqdm>=4.62.0
 pyyaml>=5.4.0
 python-dotenv>=0.19.0
+requests>=2.28.0
+
+# Pipeline data models (recsys.fourstage_recsys contexts)
+pydantic>=2.0.0
+
+# ANN retrieval (Chapter 5)
+faiss-cpu>=1.9.0
+
+# Experiment tracking
+mlflow>=3.0.0
 
 # Sentence Transformers for text embeddings
 sentence-transformers==5.2.0
