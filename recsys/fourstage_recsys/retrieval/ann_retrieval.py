@@ -33,10 +33,23 @@ from recsys.fourstage_recsys.retrieval.ann_retrieval import (
 
 from __future__ import annotations
 
+import os
+import sys
 from typing import List, Optional
+
+# On macOS, pip-installed torch and faiss each bundle their own OpenMP
+# runtime (libomp.dylib); loading both aborts the process ("OMP: Error #15"),
+# which Jupyter reports only as a kernel crash. Allowing the duplicate and
+# keeping FAISS single-threaded avoids both the abort and the segfault that
+# follows when the two runtimes share threads.
+if sys.platform == "darwin":
+    os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 import faiss
 import numpy as np
+
+if sys.platform == "darwin":
+    faiss.omp_set_num_threads(1)
 
 from recsys.fourstage_recsys.item_context import ScoredItem
 from recsys.fourstage_recsys.recsys_context import RecommendationContext
