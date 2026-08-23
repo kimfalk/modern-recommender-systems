@@ -74,3 +74,4 @@ notebooks/data/ml-100k/allbut.pl
 mlflow.db
 mlflow_artifacts
 mlruns
+data/*
