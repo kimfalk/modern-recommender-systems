@@ -25,7 +25,10 @@ Implementation notes that deliberately differ from the naive versions:
     the user would have loved but happened not to interact with. Mining the
     strict top-k punishes the model for its best predictions; the loss
     plateaus at chance level (ln(1 + num_negatives)) and the embedding space
-    collapses toward uniformity.
+    collapses toward uniformity. The band must scale with the catalog: as a
+    rule of thumb, start it beyond the top 2% of items. A too-shallow band
+    shows up as a loss that drops during warmup, jumps when mining begins,
+    and stays flat thereafter.
   - ``train_infonce`` warms up on random negatives before mining begins, so
     mining operates on an embedding space that already has broad structure.
 
@@ -165,8 +168,8 @@ def hard_negative_mining(query_embeddings: torch.Tensor,
                          query_indices: torch.Tensor,
                          num_hard_negatives: int = 2,
                          num_random_negatives: int = 6,
-                         pool_start: int = 30,
-                         pool_end: int = 150) -> torch.Tensor:
+                         pool_start: int = 200,
+                         pool_end: int = 1000) -> torch.Tensor:
     """Mine hard negatives from a band of ranks, mixed with random negatives.
 
     See the module docstring for why the band (skipping the very top ranks)
@@ -237,11 +240,14 @@ class TwoTowerWithInfoNCE(TwoTower):
 
     def __init__(self, num_items: int, emb_dim: int = 64,
                  temperature: float = 0.07,
-                 num_hard: int = 2, num_rand: int = 6):
+                 num_hard: int = 2, num_rand: int = 6,
+                 pool_start: int = 200, pool_end: int = 1000):
         super().__init__(num_items, emb_dim)
         self.infonce = InfoNCELoss(temperature)
         self.num_hard = num_hard
         self.num_rand = num_rand
+        self.pool_start = pool_start
+        self.pool_end = pool_end
 
     def candidate_table(self) -> torch.Tensor:
         all_idx = torch.arange(self.embedding2.num_embeddings,
@@ -256,7 +262,8 @@ class TwoTowerWithInfoNCE(TwoTower):
                 neg_idx = hard_negative_mining(
                     F.normalize(q.detach(), dim=-1),
                     F.normalize(mining_table, dim=-1),
-                    pos_idx, q_idx, self.num_hard, self.num_rand)  #C
+                    pos_idx, q_idx, self.num_hard, self.num_rand,
+                    self.pool_start, self.pool_end)              #C
             else:
                 neg_idx = torch.randint(                         #D
                     0, self.embedding2.num_embeddings,
