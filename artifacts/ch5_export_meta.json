@@ -1,0 +1,7 @@
+{
+  "k_retrieve": 500,
+  "n_scored": 100,
+  "n_users": 9886,
+  "scorer": "CrossEncoderScoring",
+  "share_users_with_positive": 0.7832288084159418
+}
