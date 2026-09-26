@@ -1,10 +1,11 @@
-"""Chapter 7 smoke test: the whole ordering stage, end to end, on
-synthetic MovieLens-schema data.
+"""Chapter 7 smoke test: the ordering stage end to end on synthetic
+MovieLens-schema data, through the same code path as the real run.
 
-Covers: features -> LambdaMART (with/without crosses) -> DCN-v2 ->
-evaluation against the scored-order baseline -> MMR + genre cap + ILD.
-Deterministic; asserts structural correctness, prints the metric table
-for eyeballing. Run:  python tests/smoke_test.py
+chapter-5 preprocessing -> three-way split (checked against chapter 5's
+split) -> upstream fit on 0-70% and 0-80% -> feature frames -> baselines,
+LambdaMART, pointwise GBDT -> MMR + genre cap. Asserts structural
+correctness; the synthetic numbers mean nothing. Run:
+    python tests/ordering_smoke_test.py
 """
 import os
 import sys
@@ -15,105 +16,93 @@ import numpy as np
 import pandas as pd
 import torch
 
-from recsys.fourstage_recsys.ordering import (
-    FEATURE_COLS, FEATURE_COLS_NO_CROSS, DCN_DENSE_COLS,
-    build_genre_matrix, build_feature_frame,
-    ScoredOrderBaseline, evaluate_ranker, list_divergence,
-    ild_of_list, train_lambdamart, feature_importance,
-    make_movie_index, add_movie_index, fit_scaler, make_loaders,
-    DCNv2, train_dcn, DCNRanker,
-    mmr_rerank, order_stage, candidate_similarity, primary_genre_map,
-    make_synthetic_dataset,
+from recsys.data.preprocessing import (
+    add_item_idx, build_item_index, filter_min_item_ratings, filter_positive,
+    sample_active_users, temporal_split_per_user,
 )
+from recsys.fourstage_recsys.ordering import (
+    FEATURE_COLS, FEATURE_COLS_NO_CROSS, attach_labels, attach_upstream_scores,
+    build_feature_frame, build_genre_matrix, evaluate_ordering_pass, evaluate_ranker,
+    feature_history, make_synthetic_movielens, mmr_rerank, paired_bootstrap,
+    per_user_temporal_slices, request_times, ScoredOrderBaseline, train_lambdamart,
+    train_pointwise_gbdt, candidate_similarity,
+)
+from recsys.fourstage_recsys.ordering.upstream import fit_upstream, score_candidates
 
-
-def train_test_split_by_user(frame, test_frac=0.3, seed=7):
-    users = np.array(sorted(frame["userId"].unique()))
-    rng = np.random.default_rng(seed)
-    rng.shuffle(users)
-    n_test = max(int(len(users) * test_frac), 1)
-    test_users = set(users[:n_test].tolist())
-    return (
-        frame[~frame["userId"].isin(test_users)].reset_index(drop=True),
-        frame[frame["userId"].isin(test_users)].reset_index(drop=True),
-    )
+SMALL = dict(emb_dim=32, epochs=2, warmup_epochs=1, pool_start=10, pool_end=100,
+             batch_size=256)
 
 
 def main():
     torch.manual_seed(7)
-    train, heldout, movies, candidates = make_synthetic_dataset(seed=7)
+    ratings, movies = make_synthetic_movielens(n_users=200, n_items=200, seed=7)
+    ratings = filter_min_item_ratings(
+        sample_active_users(ratings, n_users=10_000, min_ratings=20, seed=42), 10)
+    pos = filter_positive(ratings, 4.0)
+    item_ids, item_to_idx, _, _ = build_item_index(pos, movies)
+    pos = add_item_idx(pos, item_to_idx)
+
+    early, mid, late = per_user_temporal_slices(pos, cuts=(0.7, 0.8))
+    tr, te = temporal_split_per_user(pos, test_frac=0.2)
+    assert pd.concat([early, mid]).index.sort_values().equals(tr.index.sort_values())
+    assert late.index.sort_values().equals(te.index.sort_values())
+
+    up_fit = fit_upstream(early, item_ids, item_to_idx, infonce_params=SMALL,
+                          cross_encoder_epochs=1)
+    up_test = fit_upstream(pd.concat([early, mid]), item_ids, item_to_idx,
+                           infonce_params=SMALL, cross_encoder_epochs=1)
+    c_fit = score_candidates(up_fit, sorted(mid.userId.unique()), k_retrieve=50)
+    c_test = score_candidates(up_test, sorted(late.userId.unique()), k_retrieve=50)
+
+    # No candidate may be something the user already had in the upstream training slice
+    seen = set(map(tuple, early[["userId", "movieId"]].to_numpy()))
+    assert not any((u, m) in seen for u, m in c_fit[["userId", "movieId"]].to_numpy())
+
     genre_matrix = build_genre_matrix(movies)
 
-    frame = build_feature_frame(candidates, train, genre_matrix)
-    missing = [c for c in FEATURE_COLS if c not in frame.columns]
-    assert not missing, f"missing feature columns: {missing}"
-    assert not frame[FEATURE_COLS].isna().any().any(), "NaNs in feature frame"
+    def frame(cands, labels, future):
+        hist = feature_history(ratings, future)
+        assert hist.merge(future[["userId", "movieId"]]).empty, "labels leaked into history"
+        rows = attach_upstream_scores(attach_labels(cands[["userId", "movieId"]], labels), cands)
+        return build_feature_frame(rows, hist, genre_matrix, request_ts=request_times(future))
 
-    fit_frame, test_frame = train_test_split_by_user(frame)
+    fit_frame = frame(c_fit, mid, pd.concat([mid, late]))
+    test_frame = frame(c_test, late, late)
+    assert not test_frame[FEATURE_COLS].isna().any().any(), "NaNs in feature frame"
+    n_rel = late.groupby("userId").size().to_dict()
 
-    results = {}
-    results["scored order (baseline)"] = evaluate_ranker(
-        test_frame, FEATURE_COLS, ScoredOrderBaseline()
-    )
-    b = results["scored order (baseline)"]
-    assert abs(b["overlap@10"] - 1.0) < 1e-9
-    assert b["changed@10"] == 0 and b["mean_shift@10"] == 0.0
+    base, pu_base = evaluate_ranker(test_frame, FEATURE_COLS, ScoredOrderBaseline(),
+                                    n_relevant=n_rel, return_per_user=True)
+    assert base["overlap@10"] == 1.0 and base["changed@10"] == 0
 
-    lm = train_lambdamart(fit_frame, FEATURE_COLS, n_estimators=60)
-    results["lambdamart"] = evaluate_ranker(test_frame, FEATURE_COLS, lm)
-    lm_nc = train_lambdamart(fit_frame, FEATURE_COLS_NO_CROSS, n_estimators=60)
-    results["lambdamart (no crosses)"] = evaluate_ranker(
-        test_frame, FEATURE_COLS_NO_CROSS, lm_nc
-    )
-    top_feats = feature_importance(lm, FEATURE_COLS).head(5)
+    results = {"scored order": base}
+    for name, model, cols in [
+        ("lambdamart", train_lambdamart(fit_frame, FEATURE_COLS, n_estimators=50), FEATURE_COLS),
+        ("lambdamart no-x", train_lambdamart(fit_frame, FEATURE_COLS_NO_CROSS, n_estimators=50),
+         FEATURE_COLS_NO_CROSS),
+        ("gbdt pointwise", train_pointwise_gbdt(fit_frame, FEATURE_COLS, n_estimators=50),
+         FEATURE_COLS),
+    ]:
+        res, pu = evaluate_ranker(test_frame, cols, model, n_relevant=n_rel,
+                                  return_per_user=True)
+        results[name] = res
+        ci = paired_bootstrap(pu_base["ndcg@10"], pu["ndcg@10"], n_boot=200)
+        assert ci["ci_low"] <= ci["diff"] <= ci["ci_high"]
+    print(pd.DataFrame(results).T.round(4))
 
-    movie_index = make_movie_index(frame["movieId"])
-    fit_idx = add_movie_index(fit_frame, movie_index)
-    test_idx = add_movie_index(test_frame, movie_index)
-    dcn_fit, dcn_val = train_test_split_by_user(fit_idx, test_frac=0.2, seed=11)
-    scaler = fit_scaler(dcn_fit, DCN_DENSE_COLS)
-    loaders = make_loaders(dcn_fit, dcn_val, DCN_DENSE_COLS, scaler, batch_size=512)
-    model = DCNv2(
-        n_movies=len(movie_index), dense_dim=len(DCN_DENSE_COLS),
-        emb_dim=8, n_cross=2, mlp_dims=(32,),
-    )
-    model = train_dcn(model, *loaders, epochs=3, lr=1e-3)
-    dcn = DCNRanker(model, scaler, DCN_DENSE_COLS)
-    results["dcn-v2"] = evaluate_ranker(
-        test_idx, DCN_DENSE_COLS + ["movie_idx"], dcn
-    )
+    # MMR: lam=1 is the ranked order; lam<1 never lowers ILD on average
+    u = test_frame.userId.iloc[0]
+    cand = test_frame[test_frame.userId == u].sort_values("cross_encoder_score", ascending=False)
+    ids = cand.movieId.tolist()
+    sim = candidate_similarity(ids, genre_matrix)
+    assert mmr_rerank(ids, cand.cross_encoder_score.to_numpy(), sim, k=10, lam=1.0) == ids[:10]
 
-    for name, r in results.items():
-        assert 0.0 <= r["ndcg@10"] <= 1.0 and 0.0 <= r["mrr"] <= 1.0, name
-
-    one_user = test_frame[test_frame["userId"] == test_frame["userId"].iloc[0]]
-    ranked = one_user.assign(_s=lm.predict(one_user[FEATURE_COLS])) \
-                     .sort_values("_s", ascending=False)
-    cand_ids = ranked["movieId"].tolist()
-    relevance = ranked["_s"].to_numpy()
-    sim = candidate_similarity(cand_ids, genre_matrix)
-    genres = primary_genre_map(genre_matrix)
-
-    pure = mmr_rerank(cand_ids, relevance, sim, k=10, lam=1.0)
-    assert pure == cand_ids[:10], "MMR with lam=1.0 must recover pure relevance order"
-
-    final = order_stage(cand_ids, relevance, sim, genres, k=10, lam=0.6, cap=3)
-    assert len(final) == 10 and len(set(final)) == 10
-    counts = {}
-    for m in final:
-        counts[genres[m]] = counts.get(genres[m], 0) + 1
-    assert max(counts.values()) <= 3, f"genre cap violated: {counts}"
-
-    ild_before = ild_of_list(cand_ids[:10], cand_ids, sim)
-    ild_after = ild_of_list(final, cand_ids, sim)
-    div = list_divergence(np.array(cand_ids), np.array(final), k=10)
-
-    print("\n=== chapter 7 smoke test: PASS ===\n")
-    print(pd.DataFrame(results).T.round(4).to_string())
-    print("\nTop LambdaMART features by gain:")
-    print(top_feats.to_string(index=False))
-    print(f"\nOrdering pass on one user: ILD@10 {ild_before:.3f} -> {ild_after:.3f}, "
-          f"changed@10 = {div['changed@10']}, overlap@10 = {div['overlap@10']:.2f}")
+    table = evaluate_ordering_pass(test_frame, "cross_encoder_score", genre_matrix, n_users=50)
+    print(table.round(3))
+    assert table.iloc[0]["relevance retained"] == 1.0
+    assert table.iloc[2]["max items per genre"] <= 3
+    assert table.iloc[1]["ILD@10"] >= table.iloc[0]["ILD@10"]
+    print("chapter 7 smoke test passed")
 
 
 if __name__ == "__main__":

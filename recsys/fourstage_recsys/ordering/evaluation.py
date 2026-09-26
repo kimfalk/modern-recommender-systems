@@ -1,17 +1,20 @@
 """Evaluation for the ordering stage (chapter 7).
 
-The null hypothesis is the scored order: candidates sorted by their
-chapter-5 cross-encoder score. Every model is measured against that row,
-and list_divergence() reports how much the model actually changed the
-list (overlap@k, changed@k, mean_shift@k) so a metric lift can't hide
-behind a list that barely moved.
+The baseline is the scored order: candidates sorted by their chapter-5
+cross-encoder score. Every model is measured against that row, and
+list_divergence() reports how much the model actually changed the list
+(overlap@k, changed@k, mean_shift@k) so a metric lift can't hide behind a
+list that barely moved.
+
+NDCG normalization: pass `n_relevant` (userId -> number of held-out
+positives) to normalize by the user's full relevance set, exactly as the
+chapter-5 metric does. The scored-order row then reproduces chapter 5's
+cross-encoder NDCG@10 on the same users -- the wiring check. Without it,
+the ideal DCG is computed from the relevant items that made it into the
+candidate list (a candidate-conditional NDCG, always higher).
 
 intra_list_diversity (Listing 7.8) lives here because it's a metric; the
 list transforms it measures live in reranking.py.
-
-NOTE: ndcg_at_k and mrr may duplicate the chapter-4 evaluation module in
-the main repository. If so, delete the local copies and import from
-there -- the signatures here are kept identical to the chapter listings.
 """
 from __future__ import annotations
 
@@ -19,14 +22,17 @@ import numpy as np
 import pandas as pd
 
 
-def ndcg_at_k(relevances: np.ndarray, k: int) -> float:
+def ndcg_at_k(relevances: np.ndarray, k: int, n_relevant: int | None = None) -> float:
     """NDCG@k for a relevance array already in ranked order."""
     rel = np.asarray(relevances, dtype=float)[:k]
     if rel.sum() <= 0:
         return 0.0
-    discounts = 1.0 / np.log2(np.arange(2, rel.size + 2))
-    dcg = float((rel * discounts).sum())
-    ideal = np.sort(np.asarray(relevances, dtype=float))[::-1][:k]
+    discounts = 1.0 / np.log2(np.arange(2, k + 2))
+    dcg = float((rel * discounts[: rel.size]).sum())
+    if n_relevant is None:
+        ideal = np.sort(np.asarray(relevances, dtype=float))[::-1][:k]
+    else:
+        ideal = np.ones(min(int(n_relevant), k))
     idcg = float((ideal * discounts[: ideal.size]).sum())
     return dcg / idcg if idcg > 0 else 0.0
 
@@ -71,8 +77,7 @@ def intra_list_diversity(item_ids, sim_matrix) -> float:
     """Listing 7.8: average pairwise dissimilarity of a list.
 
     `item_ids` index into `sim_matrix` -- for a per-candidate-list
-    similarity matrix, pass positions (see ild_of_list for the id
-    translation helper).
+    similarity matrix, pass positions (see ild_of_list).
     """
     k = len(item_ids)
     if k < 2:
@@ -85,41 +90,90 @@ def intra_list_diversity(item_ids, sim_matrix) -> float:
 
 
 def ild_of_list(list_ids, cand_ids, sim_matrix) -> float:
-    """ILD for a list of raw ids, given the candidate-local sim matrix.
-
-    `sim_matrix` is the NxN matrix over `cand_ids` (as built by
-    reranking.candidate_similarity); this translates raw ids to
-    positions before calling intra_list_diversity.
-    """
+    """ILD for a list of raw ids, given the candidate-local sim matrix."""
     pos = {item: i for i, item in enumerate(cand_ids)}
     return intra_list_diversity([pos[i] for i in list_ids], sim_matrix)
 
 
-class ScoredOrderBaseline:
-    """The null hypothesis as a 'model': predicts the cross-encoder score.
+# ---------------------------------------------------------------------------
+# Baselines as "models": anything with predict(X) -> scores
+# ---------------------------------------------------------------------------
 
-    Feed it to evaluate_ranker to produce the baseline row of every
-    result table. Requires cross_encoder_score in the feature columns.
-    """
+class ColumnScore:
+    """Sort by one column. ColumnScore("cross_encoder_score") is the scored order."""
+
+    def __init__(self, col: str):
+        self.col = col
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
-        return X["cross_encoder_score"].to_numpy()
+        return X[self.col].to_numpy()
 
 
-def evaluate_ranker(test_frame, feature_cols, model, k: int = 10) -> dict:
+class ScoredOrderBaseline(ColumnScore):
+    """The baseline row of every result table: the chapter-5 scored order."""
+
+    def __init__(self):
+        super().__init__("cross_encoder_score")
+
+
+class LinearBlend:
+    """score = sum_i w_i * standardized(col_i) -- the hand-tuned blend a ranker replaces."""
+
+    def __init__(self, weights: dict, stats: dict):
+        self.weights, self.stats = weights, stats
+
+    def predict(self, X: pd.DataFrame) -> np.ndarray:
+        out = np.zeros(len(X))
+        for col, w in self.weights.items():
+            mu, sd = self.stats[col]
+            out += w * (X[col].to_numpy() - mu) / sd
+        return out
+
+
+def fit_blend(
+    fit_frame: pd.DataFrame,
+    extra_col: str = "item_log_pop",
+    score_col: str = "cross_encoder_score",
+    grid=np.linspace(0.0, 2.0, 21),
+    k: int = 10,
+) -> tuple[LinearBlend, float]:
+    """Tune one weight w in  score + w * extra  on the ranker's training rows."""
+    stats = {c: (fit_frame[c].mean(), fit_frame[c].std() or 1.0)
+             for c in (score_col, extra_col)}
+    best_w, best = 0.0, -1.0
+    for w in grid:
+        model = LinearBlend({score_col: 1.0, extra_col: float(w)}, stats)
+        val = evaluate_ranker(fit_frame, [score_col, extra_col], model, k=k)[f"ndcg@{k}"]
+        if val > best:
+            best_w, best = float(w), val
+    return LinearBlend({score_col: 1.0, extra_col: best_w}, stats), best_w
+
+
+# ---------------------------------------------------------------------------
+# Evaluation
+# ---------------------------------------------------------------------------
+
+def evaluate_ranker(
+    test_frame, feature_cols, model, k: int = 10,
+    n_relevant: dict | None = None, return_per_user: bool = False,
+):
     """Listing 7.3: score a ranker against the scored-order baseline.
 
-    Keys are formatted with k; at the default k=10 they match the
-    chapter tables (ndcg@10, mrr, overlap@10, changed@10, mean_shift@10).
+    Keys match the chapter tables (ndcg@10, mrr, overlap@10, changed@10,
+    mean_shift@10). With return_per_user=True, also returns a frame of
+    per-user ndcg/mrr for paired bootstrap comparisons.
     """
-    ndcgs, mrrs, divs = [], [], []
-    for _, cand in test_frame.groupby("userId"):
-        scored_order = cand.sort_values("cross_encoder_score", ascending=False)
+    users, ndcgs, mrrs, divs = [], [], [], []
+    for user_id, cand in test_frame.groupby("userId", sort=True):
+        scored_order = cand.sort_values("cross_encoder_score", ascending=False,
+                                        kind="stable")
         preds = model.predict(cand[feature_cols])
-        ranked_order = cand.assign(_s=preds).sort_values("_s", ascending=False)
-
+        ranked_order = cand.assign(_s=preds).sort_values("_s", ascending=False,
+                                                         kind="stable")
         rel = ranked_order["relevant"].to_numpy()
-        ndcgs.append(ndcg_at_k(rel, k))
+        n_rel = None if n_relevant is None else n_relevant.get(user_id, 0)
+        users.append(user_id)
+        ndcgs.append(ndcg_at_k(rel, k, n_rel))
         mrrs.append(mrr(rel))
         divs.append(list_divergence(
             scored_order["movieId"].to_numpy(),
@@ -129,4 +183,26 @@ def evaluate_ranker(test_frame, feature_cols, model, k: int = 10) -> dict:
     out = {f"ndcg@{k}": float(np.mean(ndcgs)), "mrr": float(np.mean(mrrs))}
     for key in divs[0]:
         out[key] = float(np.mean([d[key] for d in divs]))
+    if return_per_user:
+        per_user = pd.DataFrame({"userId": users, f"ndcg@{k}": ndcgs, "mrr": mrrs})
+        return out, per_user.set_index("userId")
     return out
+
+
+def paired_bootstrap(
+    per_user_a: pd.Series, per_user_b: pd.Series,
+    n_boot: int = 2000, seed: int = 7, alpha: float = 0.05,
+) -> dict:
+    """Mean difference (b - a) over users with a bootstrap CI.
+
+    Paired: the same users are resampled for both systems, which is what
+    makes a difference of a few thousandths detectable at all.
+    """
+    a, b = per_user_a.align(per_user_b, join="inner")
+    diff = (b - a).to_numpy()
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, len(diff), size=(n_boot, len(diff)))
+    boots = diff[idx].mean(axis=1)
+    lo, hi = np.quantile(boots, [alpha / 2, 1 - alpha / 2])
+    return {"diff": float(diff.mean()), "ci_low": float(lo), "ci_high": float(hi),
+            "n_users": int(len(diff))}

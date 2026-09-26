@@ -1,8 +1,7 @@
 """Ordering stage (chapter 7): learned rankers + list reranking.
 
-This package replaces the earlier ranking/ folder -- the models here are
-ordering-stage models (trained against ordering metrics, evaluated
-against the scored order from chapter 5).
+The models here are ordering-stage models: trained against ordering
+metrics and evaluated against the scored order from chapter 5.
 """
 from .features import (
     GENRES, ITEM_GENRE_COLS, USER_AFF_COLS, USER_STAT_COLS, ITEM_STAT_COLS,
@@ -11,11 +10,16 @@ from .features import (
     build_item_features, build_cross_features, attach_labels,
     attach_upstream_scores, build_feature_frame,
 )
+from .splits import per_user_temporal_slices, feature_history, request_times
 from .evaluation import (
     ndcg_at_k, mrr, list_divergence, intra_list_diversity, ild_of_list,
-    ScoredOrderBaseline, evaluate_ranker,
+    ColumnScore, ScoredOrderBaseline, LinearBlend, fit_blend,
+    evaluate_ranker, paired_bootstrap,
 )
-from .lambdamart import train_lambdamart, explain_ranker, feature_importance
+from .lambdamart import (
+    train_lambdamart, train_pointwise_gbdt, explain_ranker,
+    feature_importance, lift_curve,
+)
 from .dataset import (
     make_movie_index, add_movie_index, fit_scaler, CandidateDataset,
     make_loaders,
@@ -23,6 +27,6 @@ from .dataset import (
 from .dcn import CrossLayer, DCNv2, train_dcn, validate, DCNRanker
 from .reranking import (
     mmr_rerank, apply_category_cap, order_stage, candidate_similarity,
-    primary_genre_map,
+    primary_genre_map, normalize_relevance, evaluate_ordering_pass, lambda_sweep,
 )
-from .synthetic import make_synthetic_dataset
+from .synthetic import make_synthetic_movielens

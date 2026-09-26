@@ -9,6 +9,7 @@ torchvision>=0.15.0
 
 # ML
 lightgbm>=4.0
+pyarrow>=14
 
 # Data processing
 scipy>=1.7.0

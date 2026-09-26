@@ -14,8 +14,12 @@ from torch.utils.data import DataLoader, Dataset
 
 
 def make_movie_index(movie_ids) -> dict:
-    """Map raw movieIds to contiguous indices for the embedding table."""
-    return {m: i for i, m in enumerate(sorted(set(int(m) for m in movie_ids)))}
+    """Map raw movieIds to contiguous indices for the embedding table.
+
+    IDs are kept as-is: chapter 5 uses string movieIds, and casting here
+    would make every lookup in add_movie_index miss.
+    """
+    return {m: i for i, m in enumerate(sorted(set(movie_ids)))}
 
 
 def add_movie_index(frame: pd.DataFrame, movie_index: dict) -> pd.DataFrame:

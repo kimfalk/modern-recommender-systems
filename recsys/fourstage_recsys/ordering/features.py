@@ -6,13 +6,15 @@ cross-encoder-score merge, and the frame assembly used by the notebook.
 
 Design decisions mirrored from the chapter:
 - The cross-encoder score from chapter 5 IS a feature (SCORE_COLS). The
-  null hypothesis is the scored order, so the honest question is "how
-  much on top", not pass/fail.
+  baseline is the scored order, so the honest question is "how much on
+  top", not pass/fail.
 - FEATURE_COLS_NO_CROSS supports the cross-feature ablation in 7.6.1.
 - DCN_DENSE_COLS excludes the hand-engineered crosses: DCN-v2 is
   supposed to learn them, so feeding it x_* would muddy the comparison.
-- All builders must be called on the training window only (temporal
-  cutoff discipline from chapter 4).
+- All builders must be called on history that precedes the labels
+  (splits.feature_history builds it). build_feature_frame takes the
+  per-user request time so recency features are measured from the moment
+  the recommendation is served, not from the end of the dataset.
 """
 from __future__ import annotations
 
@@ -85,9 +87,8 @@ def build_item_features(
     current_year: int | None = None,
 ) -> pd.DataFrame:
     """Listing 7.1: item statistics plus genre indicators, indexed by movieId."""
-    if current_year is None:
-        year_max = genre_matrix["year"].max()
-        current_year = int(year_max) if np.isfinite(year_max) else 2020
+    if current_year is None:                     # the latest moment the history covers
+        current_year = pd.to_datetime(train["timestamp"].max(), unit="s").year
 
     stats = train.groupby("movieId")["rating"].agg(
         item_n_ratings="count",
@@ -117,8 +118,11 @@ def build_cross_features(rows: pd.DataFrame) -> pd.DataFrame:
 
 
 def attach_labels(candidates: pd.DataFrame, heldout: pd.DataFrame) -> pd.DataFrame:
-    """Mark a candidate relevant=1 if the user interacted with it in the
-    held-out window -- the same ground truth chapter 5 evaluated against."""
+    """Mark a candidate relevant=1 if it is among the user's held-out positives.
+
+    For the test rows, `heldout` is chapter 5's test set, so the ranker
+    and the scored-order baseline are graded on chapter 5's ground truth.
+    """
     pos = heldout[["userId", "movieId"]].drop_duplicates().assign(relevant=1)
     out = candidates.merge(pos, on=["userId", "movieId"], how="left")
     out["relevant"] = out["relevant"].fillna(0).astype(int)
@@ -131,8 +135,8 @@ def attach_upstream_scores(
     """Merge the chapter-5 cross-encoder scores onto the candidate frame.
 
     `scores` needs columns userId, movieId, cross_encoder_score. Every
-    candidate must have a score: the scored order is the null hypothesis,
-    so a missing score is a wiring bug, not something to impute away.
+    candidate must have a score: the scored order is the baseline, so a
+    missing score is a wiring bug, not something to impute away.
     """
     out = candidates.merge(
         scores[["userId", "movieId", "cross_encoder_score"]],
@@ -150,20 +154,31 @@ def attach_upstream_scores(
 
 def build_feature_frame(
     candidates: pd.DataFrame,
-    train: pd.DataFrame,
+    history: pd.DataFrame,
     genre_matrix: pd.DataFrame,
-    current_year: int | None = None,
+    request_ts: pd.Series | None = None,
 ) -> pd.DataFrame:
     """Assemble the full per-candidate feature frame.
 
     `candidates` must carry userId, movieId, cross_encoder_score and (for
-    training/evaluation) relevant. Everything is computed from `train`
-    only -- pass the training window, never the full ratings table.
+    training/evaluation) relevant. Everything is computed from `history`
+    only (see splits.feature_history). `request_ts` maps userId -> the
+    time the list is served; when given, user_days_since_active and
+    item_age are measured from it rather than from the end of `history`.
     """
-    users = build_user_features(train, genre_matrix)
-    items = build_item_features(train, genre_matrix, current_year)
+    users = build_user_features(history, genre_matrix)
+    items = build_item_features(history, genre_matrix)
     rows = candidates.merge(users, left_on="userId", right_index=True, how="left")
     rows = rows.merge(items, left_on="movieId", right_index=True, how="left")
+
+    if request_ts is not None:
+        now = rows["userId"].map(request_ts)
+        last = rows["userId"].map(history.groupby("userId")["timestamp"].max())
+        rows["user_days_since_active"] = ((now - last) / 86_400).clip(lower=0)
+        year = genre_matrix.set_index("movieId")["year"]
+        age = pd.to_datetime(now, unit="s").dt.year - rows["movieId"].map(year)
+        rows["item_age"] = age.clip(lower=0).fillna(age.median())
+
     fill_cols = USER_STAT_COLS + USER_AFF_COLS + ITEM_STAT_COLS + ITEM_GENRE_COLS
     rows[fill_cols] = rows[fill_cols].fillna(0.0)
     return build_cross_features(rows)
