@@ -92,6 +92,7 @@ def fit_upstream(
   num_items = len(item_ids)
   train_items_idx = user_item_lists(train_pos, item_col="item_idx")
 
+<<<<<<< HEAD
   if embeddings is None:
     pairs = create_positive_pairs(train_items_idx, max_pairs_per_user=50)
     model = TwoTowerWithInfoNCE(
@@ -102,6 +103,42 @@ def fit_upstream(
       num_rand=p["num_rand"],
       pool_start=p["pool_start"],
       pool_end=p["pool_end"],
+=======
+    if embeddings is None:
+        pairs = create_positive_pairs(train_items_idx, max_pairs_per_user=50)
+        model = TwoTowerWithInfoNCE(
+            num_items, emb_dim=p["emb_dim"], temperature=p["temperature"],
+            num_hard=p["num_hard"], num_rand=p["num_rand"],
+            pool_start=p["pool_start"], pool_end=p["pool_end"],
+        )
+        model, _ = train_infonce(
+            model, pairs, epochs=p["epochs"], warmup_epochs=p["warmup_epochs"],
+            batch_size=p["batch_size"], lr=p["lr"], device=device, verbose=verbose,
+        )
+        query, cand = extract_embeddings(model, device=device)
+    else:
+        query, cand = embeddings
+    emb_dim = cand.shape[1]
+
+    ann_index = ANNRetrievalIndex(index_type="hnsw", emb_dim=emb_dim)
+    ann_index.add_items(item_ids, cand)
+
+    item_features = torch.tensor(cand)
+    user_features = {
+        u: torch.tensor(cand[idxs].mean(axis=0)) for u, idxs in train_items_idx.items()
+    }
+    qn = query / (np.linalg.norm(query, axis=1, keepdims=True) + 1e-12)
+    band = (p["pool_start"], p["pool_end"])                  # same band as the two-tower
+    _, neighbor_table = ann_index.index.search(
+        np.ascontiguousarray(qn.astype(np.float32)), min(band[1], num_items))
+    users, items, labels, anchors = build_cross_encoder_training(
+        train_items_idx, neighbor_table, num_items, band=band, seed=seed)
+    history_sizes = {u: len(idxs) for u, idxs in train_items_idx.items()}
+    cross_encoder = train_cross_encoder(
+        CrossEncoderReranker(emb_dim, emb_dim), user_features, item_features,
+        users, items, labels, anchors=anchors, history_sizes=history_sizes,
+        epochs=cross_encoder_epochs, device=device, verbose=verbose,
+>>>>>>> Fix cross-encoder training: leave-one-out user vectors, banded hard negatives
     )
     model, _ = train_infonce(
       model,

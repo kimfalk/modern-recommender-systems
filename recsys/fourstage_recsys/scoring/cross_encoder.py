@@ -10,7 +10,7 @@ it is compared against, and the text-based ``TransformerCrossEncoder``
 (Listings 5.9 and 5.13). The transformer classes import the ``transformers``
 library lazily, so this module works without it installed.
 
-Two refinements over the minimal chapter listings, both of which matter in
+Three refinements over the minimal chapter listings, all of which matter in
 production:
 
   - **Explicit interaction features.** The MLP input is ``[u, i, u * i]`` --
@@ -19,11 +19,15 @@ production:
     the element-wise product lets the network start from the bi-encoder's
     answer and learn corrections to it.
   - **In-distribution negatives.** Training negatives are sampled partly
-    from each positive item's retrieval neighbors rather than the full
-    catalog. At serving time the reranker only ever sees candidates the
+    from a band of each positive item's retrieval neighbors rather than the
+    full catalog (skipping the very closest, which are false-negative prone). At serving time the reranker only ever sees candidates the
     retrieval stage already liked; training it exclusively on random
     negatives teaches a distinction every candidate it will ever score has
     already passed.
+  - **Leave-one-out user vectors.** The user feature is the mean of the
+    user's history embeddings. In training, each row's anchor item is
+    removed from that mean; otherwise every positive sits inside its own
+    user vector and the model learns to detect that instead of taste.
 
 Usage
 -----
@@ -84,48 +88,89 @@ def build_cross_encoder_training(train_items_by_user: dict,
                                  neighbor_table: np.ndarray,
                                  num_items: int,
                                  num_hard: int = 2, num_random: int = 2,
+                                 band: tuple = (0, None),
                                  seed: int = 42):
-    """Training triples (user_id, item_idx, label) with mixed negatives.
+    """Training rows (user_id, item_idx, label, anchor) with mixed negatives.
 
-    ``neighbor_table`` holds each item's retrieval neighbors (index space,
-    shape (num_items, n_neighbors)) -- the distribution the reranker will
-    actually see at serving time.
+    ``neighbor_table`` holds each item's retrieval neighbors in rank order
+    (index space, shape (num_items, n_neighbors)). Hard negatives are drawn
+    from ranks ``band[0]:band[1]`` of the positive's neighbor list. Starting
+    the band past the very top avoids the false-negative trap from the
+    hard-negative section: a user's closest unlabeled neighbors are exactly
+    the movies they are most likely to watch next.
+
+    ``anchor`` is the positive item each row was generated from. Training
+    uses it to remove that item from the user's feature vector, so the
+    model never sees a candidate inside its own user profile -- which is
+    also how it will be served, after history filtering.
     """
-    users, items, labels = [], [], []
+    users, items, labels, anchors = [], [], [], []
     rng = np.random.default_rng(seed)
-    n_neighbors = neighbor_table.shape[1]
+    pool = neighbor_table[:, band[0]:band[1]]
+    n_neighbors = pool.shape[1]
     for user_id, pos_items in train_items_by_user.items():
         pos_set = set(pos_items)
         for item in pos_items:
-            users.append(user_id); items.append(item); labels.append(1.0)
+            rows = [(item, 1.0)]
             for _ in range(num_hard):                        #A
-                neg = int(neighbor_table[item][rng.integers(n_neighbors)])
+                neg = int(pool[item][rng.integers(n_neighbors)])
                 tries = 0
                 while neg in pos_set and tries < 10:
-                    neg = int(neighbor_table[item][rng.integers(n_neighbors)])
+                    neg = int(pool[item][rng.integers(n_neighbors)])
                     tries += 1
                 if neg in pos_set:
                     neg = int(rng.integers(num_items))
-                users.append(user_id); items.append(neg); labels.append(0.0)
+                rows.append((neg, 0.0))
             for _ in range(num_random):                      #B
                 neg = int(rng.integers(num_items))
                 while neg in pos_set:
                     neg = int(rng.integers(num_items))
-                users.append(user_id); items.append(neg); labels.append(0.0)
-    return users, items, labels
+                rows.append((neg, 0.0))
+            for it, lab in rows:
+                users.append(user_id); items.append(it)
+                labels.append(lab); anchors.append(item)
+    return users, items, labels, anchors
 
 #A In-distribution negatives: items retrieval would surface, that the user did not choose
 #B Random negatives keep the broad structure
 
 
+def leave_one_out_user_features(user_features: Dict, item_features: torch.Tensor,
+                                history_sizes: Dict, users: list,
+                                anchors: list) -> torch.Tensor:
+    """Per-row user vectors with the anchor item removed from the mean.
+
+    user_features[u] is the mean of u's n history embeddings, so the mean
+    without item a is (n * mean - e_a) / (n - 1). Without this, every
+    positive row contains its own item inside the user vector and no
+    negative does -- a shortcut the model learns instantly and that never
+    exists at serving time, where candidates are filtered out of history.
+    """
+    means = torch.stack([user_features[u] for u in users])
+    n = torch.tensor([float(history_sizes[u]) for u in users]).unsqueeze(1)
+    loo = (n * means - item_features[anchors]) / (n - 1).clamp(min=1)
+    return torch.where(n > 1, loo, means)
+
+
 def train_cross_encoder(model: CrossEncoderReranker,
                         user_features: Dict, item_features: torch.Tensor,
                         users: list, items: list, labels: list,
+                        anchors: list | None = None,
+                        history_sizes: Dict | None = None,
                         epochs: int = 5, batch_size: int = 4096,
                         lr: float = 1e-3, device: str = "cpu",
                         verbose: bool = True) -> CrossEncoderReranker:
-    """Standard BCE training over the (user, item, label) triples."""
-    user_feat_matrix = torch.stack([user_features[u] for u in users])
+    """BCE training over (user, item, label) rows.
+
+    Pass ``anchors`` and ``history_sizes`` (from build_cross_encoder_training
+    and the training histories) to train on leave-one-out user vectors --
+    strongly recommended; see leave_one_out_user_features.
+    """
+    if anchors is not None:
+        user_feat_matrix = leave_one_out_user_features(
+            user_features, item_features, history_sizes, users, anchors)
+    else:
+        user_feat_matrix = torch.stack([user_features[u] for u in users])
     item_feat_matrix = item_features[items]
     label_tensor = torch.tensor(labels)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
