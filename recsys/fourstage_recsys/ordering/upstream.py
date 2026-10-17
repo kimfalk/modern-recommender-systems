@@ -76,6 +76,7 @@ def fit_upstream(
   embeddings: tuple[np.ndarray, np.ndarray] | None = None,
   infonce_params: dict | None = None,
   cross_encoder_epochs: int = CH5_CROSS_ENCODER_EPOCHS,
+  cross_encoder_state: dict | None = None,
   device: str = "cpu",
   seed: int = 42,
   verbose: bool = False,
@@ -84,7 +85,10 @@ def fit_upstream(
 
   `train_pos` must carry userId, movieId, item_idx, timestamp. Pass
   `embeddings=(query, cand)` to reuse two-tower tables already trained
-  on exactly this slice (e.g. chapter 5's embeddings.npz for the 80% cut).
+  on exactly this slice (e.g. chapter 5's embeddings.npz for the 80% cut),
+  and `cross_encoder_state` (chapter 5's cross_encoder.pt) to load the
+  trained cross-encoder instead of retraining it. Only pass both for the
+  slice chapter 5 trained on, or the scores will not match the history.
   """
   torch.manual_seed(seed)
   np.random.seed(seed)
@@ -92,7 +96,6 @@ def fit_upstream(
   num_items = len(item_ids)
   train_items_idx = user_item_lists(train_pos, item_col="item_idx")
 
-<<<<<<< HEAD
   if embeddings is None:
     pairs = create_positive_pairs(train_items_idx, max_pairs_per_user=50)
     model = TwoTowerWithInfoNCE(
@@ -103,42 +106,6 @@ def fit_upstream(
       num_rand=p["num_rand"],
       pool_start=p["pool_start"],
       pool_end=p["pool_end"],
-=======
-    if embeddings is None:
-        pairs = create_positive_pairs(train_items_idx, max_pairs_per_user=50)
-        model = TwoTowerWithInfoNCE(
-            num_items, emb_dim=p["emb_dim"], temperature=p["temperature"],
-            num_hard=p["num_hard"], num_rand=p["num_rand"],
-            pool_start=p["pool_start"], pool_end=p["pool_end"],
-        )
-        model, _ = train_infonce(
-            model, pairs, epochs=p["epochs"], warmup_epochs=p["warmup_epochs"],
-            batch_size=p["batch_size"], lr=p["lr"], device=device, verbose=verbose,
-        )
-        query, cand = extract_embeddings(model, device=device)
-    else:
-        query, cand = embeddings
-    emb_dim = cand.shape[1]
-
-    ann_index = ANNRetrievalIndex(index_type="hnsw", emb_dim=emb_dim)
-    ann_index.add_items(item_ids, cand)
-
-    item_features = torch.tensor(cand)
-    user_features = {
-        u: torch.tensor(cand[idxs].mean(axis=0)) for u, idxs in train_items_idx.items()
-    }
-    qn = query / (np.linalg.norm(query, axis=1, keepdims=True) + 1e-12)
-    band = (p["pool_start"], p["pool_end"])                  # same band as the two-tower
-    _, neighbor_table = ann_index.index.search(
-        np.ascontiguousarray(qn.astype(np.float32)), min(band[1], num_items))
-    users, items, labels, anchors = build_cross_encoder_training(
-        train_items_idx, neighbor_table, num_items, band=band, seed=seed)
-    history_sizes = {u: len(idxs) for u, idxs in train_items_idx.items()}
-    cross_encoder = train_cross_encoder(
-        CrossEncoderReranker(emb_dim, emb_dim), user_features, item_features,
-        users, items, labels, anchors=anchors, history_sizes=history_sizes,
-        epochs=cross_encoder_epochs, device=device, verbose=verbose,
->>>>>>> Fix cross-encoder training: leave-one-out user vectors, banded hard negatives
     )
     model, _ = train_infonce(
       model,
@@ -162,24 +129,32 @@ def fit_upstream(
   user_features = {
     u: torch.tensor(cand[idxs].mean(axis=0)) for u, idxs in train_items_idx.items()
   }
-  qn = query / (np.linalg.norm(query, axis=1, keepdims=True) + 1e-12)
-  _, neighbor_table = ann_index.index.search(
-    np.ascontiguousarray(qn.astype(np.float32)), 50
-  )
-  users, items, labels = build_cross_encoder_training(
-    train_items_idx, neighbor_table, num_items, seed=seed
-  )
-  cross_encoder = train_cross_encoder(
-    CrossEncoderReranker(emb_dim, emb_dim),
-    user_features,
-    item_features,
-    users,
-    items,
-    labels,
-    epochs=cross_encoder_epochs,
-    device=device,
-    verbose=verbose,
-  )
+  if cross_encoder_state is not None:  # chapter 5's own model
+    cross_encoder = CrossEncoderReranker(emb_dim, emb_dim)
+    cross_encoder.load_state_dict(cross_encoder_state)
+  else:
+    qn = query / (np.linalg.norm(query, axis=1, keepdims=True) + 1e-12)
+    band = (p["pool_start"], p["pool_end"])  # same band as the two-tower
+    _, neighbor_table = ann_index.index.search(
+      np.ascontiguousarray(qn.astype(np.float32)), min(band[1], num_items)
+    )
+    users, items, labels, anchors = build_cross_encoder_training(
+      train_items_idx, neighbor_table, num_items, band=band, seed=seed
+    )
+    history_sizes = {u: len(idxs) for u, idxs in train_items_idx.items()}
+    cross_encoder = train_cross_encoder(
+      CrossEncoderReranker(emb_dim, emb_dim),
+      user_features,
+      item_features,
+      users,
+      items,
+      labels,
+      anchors=anchors,
+      history_sizes=history_sizes,
+      epochs=cross_encoder_epochs,
+      device=device,
+      verbose=verbose,
+    )
   return UpstreamModels(
     item_ids=item_ids,
     item_to_idx=item_to_idx,
