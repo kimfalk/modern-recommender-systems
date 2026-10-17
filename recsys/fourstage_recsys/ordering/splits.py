@@ -29,6 +29,7 @@ Known limitation (also true of chapter 5): a per-user split is not a
 global one. Item statistics computed from "history" include other users'
 ratings that may be later in wall-clock time than this user's request.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -36,48 +37,48 @@ import pandas as pd
 
 
 def per_user_temporal_slices(
-    interactions: pd.DataFrame,
-    cuts: tuple[float, ...] = (0.7, 0.8),
-    min_interactions: int = 5,
+  interactions: pd.DataFrame,
+  cuts: tuple[float, ...] = (0.7, 0.8),
+  min_interactions: int = 5,
 ) -> list[pd.DataFrame]:
-    """Cut each user's chronological history at the given fractions.
+  """Cut each user's chronological history at the given fractions.
 
-    Returns len(cuts) + 1 frames. Users with fewer than `min_interactions`
-    interactions go entirely into the first slice, matching chapter 5.
-    The last cut uses the same arithmetic as temporal_split_per_user, so
-    slices[:-1] concatenated equals its train_df and slices[-1] its test_df.
-    """
-    df = interactions.sort_values(["userId", "timestamp"])     # same sort as ch5
-    pos = df.groupby("userId").cumcount().to_numpy()
-    n = df.groupby("userId")["userId"].transform("size").to_numpy()
-    slice_id = np.zeros(len(df), dtype=int)
-    eligible = n >= min_interactions
-    for c in cuts:
-        bound = np.maximum(1, np.floor(n * c).astype(int))     # == max(1, int(n*c))
-        slice_id += (eligible & (pos >= bound)).astype(int)
-    return [df[slice_id == s] for s in range(len(cuts) + 1)]
+  Returns len(cuts) + 1 frames. Users with fewer than `min_interactions`
+  interactions go entirely into the first slice, matching chapter 5.
+  The last cut uses the same arithmetic as temporal_split_per_user, so
+  slices[:-1] concatenated equals its train_df and slices[-1] its test_df.
+  """
+  df = interactions.sort_values(["userId", "timestamp"])  # same sort as ch5
+  pos = df.groupby("userId").cumcount().to_numpy()
+  n = df.groupby("userId")["userId"].transform("size").to_numpy()
+  slice_id = np.zeros(len(df), dtype=int)
+  eligible = n >= min_interactions
+  for c in cuts:
+    bound = np.maximum(1, np.floor(n * c).astype(int))  # == max(1, int(n*c))
+    slice_id += (eligible & (pos >= bound)).astype(int)
+  return [df[slice_id == s] for s in range(len(cuts) + 1)]
 
 
 def feature_history(
-    ratings: pd.DataFrame,
-    future_positives: pd.DataFrame,
-    like_threshold: float = 4.0,
+  ratings: pd.DataFrame,
+  future_positives: pd.DataFrame,
+  like_threshold: float = 4.0,
 ) -> pd.DataFrame:
-    """Everything a model may see when predicting `future_positives`.
+  """Everything a model may see when predicting `future_positives`.
 
-    `ratings` holds all ratings (any value) for the sampled users/items.
-    Removed: the future positives themselves, and every non-positive
-    rating at or after the user's first future positive. Users with no
-    future positives keep their full history.
-    """
-    keys = future_positives[["userId", "movieId"]].drop_duplicates().assign(_future=1)
-    r = ratings.merge(keys, on=["userId", "movieId"], how="left")
-    r = r[r["_future"].isna()].drop(columns="_future")
-    boundary = r["userId"].map(request_times(future_positives))
-    keep = boundary.isna() | (r["rating"] >= like_threshold) | (r["timestamp"] < boundary)
-    return r[keep].reset_index(drop=True)
+  `ratings` holds all ratings (any value) for the sampled users/items.
+  Removed: the future positives themselves, and every non-positive
+  rating at or after the user's first future positive. Users with no
+  future positives keep their full history.
+  """
+  keys = future_positives[["userId", "movieId"]].drop_duplicates().assign(_future=1)
+  r = ratings.merge(keys, on=["userId", "movieId"], how="left")
+  r = r[r["_future"].isna()].drop(columns="_future")
+  boundary = r["userId"].map(request_times(future_positives))
+  keep = boundary.isna() | (r["rating"] >= like_threshold) | (r["timestamp"] < boundary)
+  return r[keep].reset_index(drop=True)
 
 
 def request_times(future_positives: pd.DataFrame) -> pd.Series:
-    """Per-user request time: the timestamp of the first held-out positive."""
-    return future_positives.groupby("userId")["timestamp"].min()
+  """Per-user request time: the timestamp of the first held-out positive."""
+  return future_positives.groupby("userId")["timestamp"].min()
