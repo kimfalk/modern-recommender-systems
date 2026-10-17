@@ -72,27 +72,54 @@ def validate(model: nn.Module, loader, loss_fn) -> float:
   return total / max(n, 1)
 
 
-def train_dcn(model, loader, val_loader, epochs: int = 10, lr: float = 1e-3):
-  """Pointwise training with early selection of the best epoch."""
+def train_dcn(
+  model,
+  loader,
+  val_loader,
+  epochs: int = 10,
+  lr: float = 1e-3,
+  eval_fn=None,
+  on_epoch=None,
+):
+  """Pointwise training; keeps the weights from the epoch with the lowest
+  validation loss.
+
+  Returns (model, history), where history holds one dict per epoch with
+  train_loss and val_loss -- the curves that show under- or overfitting.
+  `eval_fn(model) -> dict` adds metrics of your own per epoch (e.g.
+  validation NDCG@10); `on_epoch(epoch, metrics)` is called after each
+  epoch, which is where the notebook logs to MLflow.
+  """
   opt = torch.optim.Adam(model.parameters(), lr=lr)
   loss_fn = nn.BCEWithLogitsLoss()
-  best, best_state = float("inf"), None
+  best, best_state, history = float("inf"), None, []
 
-  for _ in range(epochs):
+  for epoch in range(epochs):
     model.train()
+    total, n = 0.0, 0
     for movie, dense, y in loader:
       opt.zero_grad()
       loss = loss_fn(model(movie, dense), y)
       loss.backward()
       opt.step()
-    val = validate(model, val_loader, loss_fn)
-    if val < best:
-      best = val
+      total += loss.item() * len(y)
+      n += len(y)
+    metrics = {
+      "train_loss": total / max(n, 1),
+      "val_loss": validate(model, val_loader, loss_fn),
+    }
+    if eval_fn is not None:
+      metrics.update(eval_fn(model))
+    history.append({"epoch": epoch, **metrics})
+    if on_epoch is not None:
+      on_epoch(epoch, metrics)
+    if metrics["val_loss"] < best:
+      best = metrics["val_loss"]
       best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
 
   if best_state is not None:
     model.load_state_dict(best_state)
-  return model
+  return model, history
 
 
 class DCNRanker:
