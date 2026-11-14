@@ -1,15 +1,19 @@
 # Core dependencies
-numpy>=1.21.0
-pandas>=1.3.0
-scikit-learn>=1.0.0
+numpy>=1.24
+pandas>=2.0
+scikit-learn>=1.3
 
 # Deep Learning
-torch>=2.0.0
+torch>=2.1
 torchvision>=0.15.0
+
+# ML
+lightgbm>=4.0
+pyarrow>=14
 
 # Data processing
 scipy>=1.7.0
-matplotlib>=3.4.0
+matplotlib>=3.7
 seaborn>=0.11.0
 
 # Jupyter
@@ -35,6 +39,5 @@ mlflow>=3.0.0
 # Sentence Transformers for text embeddings
 sentence-transformers==5.2.0
 
-# Optional: for specific recommender system libraries
-# implicit>=0.5.0
-# lightfm>=1.16
+# notebook-only:
+shap>=0.44

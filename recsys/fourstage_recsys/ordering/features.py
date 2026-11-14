@@ -1,165 +1,207 @@
-"""Feature engineering for the ranking stage (chapter 7).
+"""Feature engineering for the ordering stage (chapter 7).
 
-Builds the three feature families used by both rankers:
+Listing 7.1 shows the three family builders; this module is the full
+runnable version, including the feature-column constants, the upstream
+cross-encoder-score merge, and the frame assembly used by the notebook.
 
-* user features   -- rating statistics, activity recency, genre affinities
-* item features   -- popularity, average rating, age, genre indicators
-* cross features  -- user-x-item interactions (genre affinity dot product,
-                     rating gap)
-
-Everything is computed from the *training window only*.  The public entry
-points take the training interactions explicitly so that temporal leakage
-is a type error rather than a silent bug: if you only have the train
-DataFrame in scope, you cannot accidentally use test-period statistics.
+Design decisions mirrored from the chapter:
+- The cross-encoder score from chapter 5 IS a feature (SCORE_COLS). The
+  baseline is the scored order, so the honest question is "how much on
+  top", not pass/fail.
+- FEATURE_COLS_NO_CROSS supports the cross-feature ablation in 7.6.1.
+- DCN_DENSE_COLS excludes the hand-engineered crosses: DCN-v2 is
+  supposed to learn them, so feeding it x_* would muddy the comparison.
+- All builders must be called on history that precedes the labels
+  (splits.feature_history builds it). build_feature_frame takes the
+  per-user request time so recency features are measured from the moment
+  the recommendation is served, not from the end of the dataset.
 """
 
 from __future__ import annotations
 
-import re
-
 import numpy as np
 import pandas as pd
 
-# The 19 MovieLens genre labels ("(no genres listed)" is dropped).
 GENRES = [
-    "Action", "Adventure", "Animation", "Children", "Comedy", "Crime",
-    "Documentary", "Drama", "Fantasy", "Film-Noir", "Horror", "IMAX",
-    "Musical", "Mystery", "Romance", "Sci-Fi", "Thriller", "War", "Western",
+  "Action",
+  "Adventure",
+  "Animation",
+  "Children",
+  "Comedy",
+  "Crime",
+  "Documentary",
+  "Drama",
+  "Fantasy",
+  "Film-Noir",
+  "Horror",
+  "IMAX",
+  "Musical",
+  "Mystery",
+  "Romance",
+  "Sci-Fi",
+  "Thriller",
+  "War",
+  "Western",
 ]
 
-_YEAR_RE = re.compile(r"\((\d{4})\)\s*$")
-
+ITEM_GENRE_COLS = [f"genre_{g}" for g in GENRES]
+USER_AFF_COLS = [f"aff_{g}" for g in GENRES]
 USER_STAT_COLS = [
-    "user_n_ratings",
-    "user_mean_rating",
-    "user_rating_std",
-    "user_days_since_active",
+  "user_n_ratings",
+  "user_mean_rating",
+  "user_rating_std",
+  "user_days_since_active",
 ]
-USER_AFF_COLS = [f"user_aff_{g}" for g in GENRES]
-ITEM_STAT_COLS = [
-    "item_n_ratings",
-    "item_mean_rating",
-    "item_log_pop",
-    "item_age",
-]
-ITEM_GENRE_COLS = [f"item_is_{g}" for g in GENRES]
+ITEM_STAT_COLS = ["item_n_ratings", "item_mean_rating", "item_log_pop", "item_age"]
 CROSS_COLS = ["x_genre_affinity", "x_rating_gap", "x_pop_for_light_user"]
+SCORE_COLS = ["cross_encoder_score"]
 
-#: The columns both rankers train on, in a stable order.
 FEATURE_COLS = (
-    USER_STAT_COLS + USER_AFF_COLS + ITEM_STAT_COLS + ITEM_GENRE_COLS + CROSS_COLS
+  USER_STAT_COLS
+  + USER_AFF_COLS
+  + ITEM_STAT_COLS
+  + ITEM_GENRE_COLS
+  + CROSS_COLS
+  + SCORE_COLS
 )
+FEATURE_COLS_NO_CROSS = [c for c in FEATURE_COLS if c not in CROSS_COLS]
+DCN_DENSE_COLS = FEATURE_COLS_NO_CROSS
 
 
 def build_genre_matrix(movies: pd.DataFrame) -> pd.DataFrame:
-    """Return one row per movie with ``item_is_<genre>`` indicator columns
-    and a ``year`` column parsed from the title.
-
-    Parameters
-    ----------
-    movies:
-        The MovieLens ``movies.csv`` frame (movieId, title, genres).
-    """
-    out = pd.DataFrame({"movieId": movies["movieId"].to_numpy()})
-    genre_sets = movies["genres"].fillna("").str.split("|")
-    for g in GENRES:
-        out[f"item_is_{g}"] = genre_sets.apply(lambda s, g=g: int(g in s)).astype(
-            np.int8
-        )
-    out["year"] = (
-        movies["title"].astype(str).str.extract(_YEAR_RE, expand=False).astype(float)
-    )
-    return out
+  """Turn MovieLens movies.csv into movieId + year + 19 genre indicators."""
+  out = movies[["movieId"]].copy()
+  out["year"] = (
+    movies["title"].astype(str).str.extract(r"\((\d{4})\)\s*$")[0].astype(float)
+  )
+  split = movies["genres"].astype(str).str.split("|")
+  for genre, col in zip(GENRES, ITEM_GENRE_COLS):
+    out[col] = split.apply(lambda gs: float(genre in gs))
+  return out
 
 
 def build_user_features(
-    train: pd.DataFrame, genre_matrix: pd.DataFrame, like_threshold: float = 4.0
+  train: pd.DataFrame,
+  genre_matrix: pd.DataFrame,
+  like_threshold: float = 4.0,
 ) -> pd.DataFrame:
-    """User-side features from the training window (listing 7.1).
+  """Listing 7.1: user statistics plus the genre-affinity taste vector."""
+  stats = train.groupby("userId")["rating"].agg(
+    user_n_ratings="count",
+    user_mean_rating="mean",
+    user_rating_std="std",
+  )
+  last_ts = train.groupby("userId")["timestamp"].max()
+  stats["user_days_since_active"] = (train["timestamp"].max() - last_ts) / 86_400
 
-    Returns a frame indexed by userId with rating statistics, recency, and
-    a 19-dimensional genre-affinity vector: the mean genre indicators of
-    the movies this user rated >= ``like_threshold``.
-    """
-    stats = train.groupby("userId")["rating"].agg(
-        user_n_ratings="count",
-        user_mean_rating="mean",
-        user_rating_std="std",
-    )
-    last_ts = train.groupby("userId")["timestamp"].max()
-    stats["user_days_since_active"] = (train["timestamp"].max() - last_ts) / 86_400
-
-    liked = train[train["rating"] >= like_threshold]
-    affinity = (
-        liked.merge(genre_matrix[["movieId"] + ITEM_GENRE_COLS], on="movieId")
-        .groupby("userId")[ITEM_GENRE_COLS]
-        .mean()
-    )
-    affinity.columns = USER_AFF_COLS
-    return stats.join(affinity).fillna(0.0)
+  liked = train[train["rating"] >= like_threshold]
+  affinity = (
+    liked.merge(genre_matrix[["movieId"] + ITEM_GENRE_COLS], on="movieId")
+    .groupby("userId")[ITEM_GENRE_COLS]
+    .mean()
+  )
+  affinity.columns = USER_AFF_COLS
+  return stats.join(affinity).fillna(0.0)
 
 
 def build_item_features(
-    train: pd.DataFrame, genre_matrix: pd.DataFrame, current_year: int | None = None
+  train: pd.DataFrame,
+  genre_matrix: pd.DataFrame,
+  current_year: int | None = None,
 ) -> pd.DataFrame:
-    """Item-side features from the training window (listing 7.1).
+  """Listing 7.1: item statistics plus genre indicators, indexed by movieId."""
+  if current_year is None:  # the latest moment the history covers
+    current_year = pd.to_datetime(train["timestamp"].max(), unit="s").year
 
-    Returns a frame indexed by movieId.  Items present in the catalog but
-    unrated in the training window get zero counts rather than dropping
-    out -- the ranker must be able to score cold candidates.
-    """
-    if current_year is None:
-        current_year = int(
-            pd.to_datetime(train["timestamp"].max(), unit="s").year
-        )
-
-    stats = train.groupby("movieId")["rating"].agg(
-        item_n_ratings="count",
-        item_mean_rating="mean",
-    )
-    item = genre_matrix.set_index("movieId").join(stats)
-    item["item_n_ratings"] = item["item_n_ratings"].fillna(0.0)
-    global_mean = train["rating"].mean()
-    item["item_mean_rating"] = item["item_mean_rating"].fillna(global_mean)
-    item["item_log_pop"] = np.log1p(item["item_n_ratings"])
-    age = (current_year - item["year"]).clip(lower=0)
-    item["item_age"] = age.fillna(age.median())  # ~1% of titles lack a year
-    return item[ITEM_STAT_COLS + ITEM_GENRE_COLS]
+  stats = train.groupby("movieId")["rating"].agg(
+    item_n_ratings="count",
+    item_mean_rating="mean",
+  )
+  item = genre_matrix.set_index("movieId").join(stats)
+  item["item_n_ratings"] = item["item_n_ratings"].fillna(0.0)
+  item["item_mean_rating"] = item["item_mean_rating"].fillna(train["rating"].mean())
+  item["item_log_pop"] = np.log1p(item["item_n_ratings"])
+  age = (current_year - item["year"]).clip(lower=0)
+  item["item_age"] = age.fillna(age.median() if np.isfinite(age.median()) else 0.0)
+  return item[ITEM_STAT_COLS + ITEM_GENRE_COLS]
 
 
 def build_cross_features(rows: pd.DataFrame) -> pd.DataFrame:
-    """Pair features describing the user-item combination (listing 7.1).
-
-    Expects ``rows`` to already carry the user and item feature columns.
-    """
-    aff = rows[USER_AFF_COLS].to_numpy(dtype=np.float32)
-    genres = rows[ITEM_GENRE_COLS].to_numpy(dtype=np.float32)
-    n_genres = genres.sum(axis=1)
-    rows["x_genre_affinity"] = (aff * genres).sum(axis=1) / np.maximum(n_genres, 1.0)
-    rows["x_rating_gap"] = rows["item_mean_rating"] - rows["user_mean_rating"]
-    # Popularity matters more when we know little about the user.
-    rows["x_pop_for_light_user"] = rows["item_log_pop"] / np.log1p(
-        rows["user_n_ratings"] + 1.0
-    )
-    return rows
+  """Listing 7.1: hand-engineered feature products."""
+  rows = rows.copy()
+  aff = rows[USER_AFF_COLS].to_numpy(dtype=np.float32)
+  genres = rows[ITEM_GENRE_COLS].to_numpy(dtype=np.float32)
+  n_genres = genres.sum(axis=1)
+  rows["x_genre_affinity"] = (aff * genres).sum(axis=1) / np.maximum(n_genres, 1.0)
+  rows["x_rating_gap"] = rows["item_mean_rating"] - rows["user_mean_rating"]
+  rows["x_pop_for_light_user"] = rows["item_log_pop"] / np.log1p(
+    rows["user_n_ratings"] + 1.0
+  )
+  return rows
 
 
-def assemble_examples(
-    pairs: pd.DataFrame,
-    user_features: pd.DataFrame,
-    item_features: pd.DataFrame,
+def attach_labels(candidates: pd.DataFrame, heldout: pd.DataFrame) -> pd.DataFrame:
+  """Mark a candidate relevant=1 if it is among the user's held-out positives.
+
+  For the test rows, `heldout` is chapter 5's test set, so the ranker
+  and the scored-order baseline are graded on chapter 5's ground truth.
+  """
+  pos = heldout[["userId", "movieId"]].drop_duplicates().assign(relevant=1)
+  out = candidates.merge(pos, on=["userId", "movieId"], how="left")
+  out["relevant"] = out["relevant"].fillna(0).astype(int)
+  return out
+
+
+def attach_upstream_scores(
+  candidates: pd.DataFrame, scores: pd.DataFrame
 ) -> pd.DataFrame:
-    """Join a (userId, movieId, ...) frame with all three feature families.
+  """Merge the chapter-5 cross-encoder scores onto the candidate frame.
 
-    Rows whose user or item never appeared in the training window are kept
-    and filled with zeros -- again, the ranker has to survive cold inputs.
-    """
-    out = pairs.merge(user_features, left_on="userId", right_index=True, how="left")
-    out = out.merge(item_features, left_on="movieId", right_index=True, how="left")
-    out[USER_STAT_COLS + USER_AFF_COLS] = out[
-        USER_STAT_COLS + USER_AFF_COLS
-    ].fillna(0.0)
-    out[ITEM_STAT_COLS + ITEM_GENRE_COLS] = out[
-        ITEM_STAT_COLS + ITEM_GENRE_COLS
-    ].fillna(0.0)
-    return build_cross_features(out)
+  `scores` needs columns userId, movieId, cross_encoder_score. Every
+  candidate must have a score: the scored order is the baseline, so a
+  missing score is a wiring bug, not something to impute away.
+  """
+  out = candidates.merge(
+    scores[["userId", "movieId", "cross_encoder_score"]],
+    on=["userId", "movieId"],
+    how="left",
+  )
+  if out["cross_encoder_score"].isna().any():
+    n = int(out["cross_encoder_score"].isna().sum())
+    raise ValueError(
+      f"{n} candidates have no cross_encoder_score; "
+      "wire in the chapter-5 scorer output for the full candidate set."
+    )
+  return out
+
+
+def build_feature_frame(
+  candidates: pd.DataFrame,
+  history: pd.DataFrame,
+  genre_matrix: pd.DataFrame,
+  request_ts: pd.Series | None = None,
+) -> pd.DataFrame:
+  """Assemble the full per-candidate feature frame.
+
+  `candidates` must carry userId, movieId, cross_encoder_score and (for
+  training/evaluation) relevant. Everything is computed from `history`
+  only (see splits.feature_history). `request_ts` maps userId -> the
+  time the list is served; when given, user_days_since_active and
+  item_age are measured from it rather than from the end of `history`.
+  """
+  users = build_user_features(history, genre_matrix)
+  items = build_item_features(history, genre_matrix)
+  rows = candidates.merge(users, left_on="userId", right_index=True, how="left")
+  rows = rows.merge(items, left_on="movieId", right_index=True, how="left")
+
+  if request_ts is not None:
+    now = rows["userId"].map(request_ts)
+    last = rows["userId"].map(history.groupby("userId")["timestamp"].max())
+    rows["user_days_since_active"] = ((now - last) / 86_400).clip(lower=0)
+    year = genre_matrix.set_index("movieId")["year"]
+    age = pd.to_datetime(now, unit="s").dt.year - rows["movieId"].map(year)
+    rows["item_age"] = age.clip(lower=0).fillna(age.median())
+
+  fill_cols = USER_STAT_COLS + USER_AFF_COLS + ITEM_STAT_COLS + ITEM_GENRE_COLS
+  rows[fill_cols] = rows[fill_cols].fillna(0.0)
+  return build_cross_features(rows)

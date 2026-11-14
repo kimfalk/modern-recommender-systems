@@ -52,9 +52,7 @@ import torch
 import torch.nn as nn
 
 from recsys.fourstage_recsys.item_context import ScoredItem
-from recsys.fourstage_recsys.ordering.features import GENRES
-
-ITEM_GENRE_COLS = [f"item_is_{g}" for g in GENRES]
+from recsys.fourstage_recsys.ordering.features import ITEM_GENRE_COLS
 
 
 def _scale_year(years: np.ndarray) -> np.ndarray:
