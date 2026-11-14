@@ -286,8 +286,15 @@ class TwoTowerWithInfoNCE(TwoTower):
 
 def train_bce(model: TwoTower, positive_pairs: list, negative_pairs: list,
               epochs: int = 4, batch_size: int = 2048, lr: float = 1e-3,
-              device: str = "cpu", verbose: bool = True):
+              device: str = "cpu", verbose: bool = True,
+              eval_fn=None, on_epoch=None):
     """Train the baseline two-tower model with BCE on labeled pairs.
+
+    ``eval_fn(model) -> dict`` adds metrics of your own after each epoch
+    (e.g. Recall@100); ``on_epoch(epoch, metrics)`` receives them together
+    with ``train_loss`` -- the hook the notebooks use to log to MLflow.
+    Neither touches the random number generator, so passing them does not
+    change what the model learns.
 
     Returns
     -------
@@ -319,16 +326,32 @@ def train_bce(model: TwoTower, positive_pairs: list, negative_pairs: list,
             total += loss.item() * len(idx)
         epoch_loss = total / n
         losses.append(epoch_loss)
-        if verbose:
-            print(f"epoch {epoch + 1}/{epochs} -- loss {epoch_loss:.4f}")
+        _report_epoch(model, epoch, epochs, {"train_loss": epoch_loss},
+                      eval_fn, on_epoch, verbose)
     return model, losses
+
+
+def _report_epoch(model, epoch, epochs, metrics, eval_fn, on_epoch, verbose):
+    """Shared end-of-epoch bookkeeping for the training loops."""
+    if eval_fn is not None:
+        metrics.update(eval_fn(model))
+        model.train()                       # eval_fn may switch to eval mode
+    if verbose:
+        print(f"epoch {epoch + 1}/{epochs} -- "
+              + ", ".join(f"{k} {v:.4f}" for k, v in metrics.items()))
+    if on_epoch is not None:
+        on_epoch(epoch, metrics)
 
 
 def train_infonce(model: TwoTowerWithInfoNCE, positive_pairs: list,
                   epochs: int = 10, batch_size: int = 1024, lr: float = 5e-3,
                   warmup_epochs: int = 2, device: str = "cpu",
-                  verbose: bool = True):
+                  verbose: bool = True, eval_fn=None, on_epoch=None):
     """Train with InfoNCE: random negatives during warmup, then mined ones.
+
+    ``eval_fn`` and ``on_epoch`` work as in ``train_bce``. The metrics also
+    carry ``mining`` (0 during warmup, 1 once hard negatives are mined), so
+    a logged loss curve shows exactly where mining switched on.
 
     Returns
     -------
@@ -360,8 +383,10 @@ def train_infonce(model: TwoTowerWithInfoNCE, positive_pairs: list,
             total += loss.item() * len(idx)
         epoch_loss = total / n
         losses.append(epoch_loss)
-        if verbose:
-            print(f"epoch {epoch + 1}/{epochs} -- loss {epoch_loss:.4f}")
+        _report_epoch(model, epoch, epochs,
+                      {"train_loss": epoch_loss,
+                       "mining": float(mining_table is not None)},
+                      eval_fn, on_epoch, verbose)
     return model, losses
 
 #A Build the mining table once per epoch after warmup; None signals random negatives
