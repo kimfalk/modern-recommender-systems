@@ -7,14 +7,8 @@ import os
 import sys
 import warnings
 
+import pytest
 import torch
-
-try:
-    import pytest
-    HAS_PYTEST = True
-except ImportError:  # run_standalone_tests() works without pytest
-    pytest = None
-    HAS_PYTEST = False
 
 # Add project to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -169,14 +163,10 @@ class TestCacheDetection:
         cache_dir = os.path.join(semantic_ids_dir, '__pycache__')
         
         if os.path.exists(cache_dir):
-            if HAS_PYTEST:
-                warnings.warn(
-                    f"__pycache__ directory exists at {cache_dir}. "
-                    "Consider deleting it if experiencing issues with code updates."
-                )
-            else:
-                print(f"⚠️  Warning: __pycache__ exists at {cache_dir}")
-                print("   Consider deleting it if experiencing issues with code updates.")
+            warnings.warn(
+                f"__pycache__ directory exists at {cache_dir}. "
+                "Consider deleting it if experiencing issues with code updates."
+            )
 
 
 def run_standalone_tests():
