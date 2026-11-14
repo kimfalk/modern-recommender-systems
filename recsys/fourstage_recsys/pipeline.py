@@ -11,18 +11,21 @@ class FourStageRecommender:
         filter: Filtering,          
         scorer: Scorer,
         ordering: Ordering,
+        retrieval_k: int = 100,
     ):
         self.retrieval = retrieval
         self.filter = filter
         self.scorer = scorer
         self.ordering = ordering
+        self.retrieval_k = retrieval_k
  
     def recommend(self, context: RecommendationContext, debug=False):
         """Run the four-stage pipeline: 
             retrieve → filter → score → order.
         """
         
-        candidates = self.retrieval.retrieve_similar_items(context.seed_items, k=100) #A
+        candidates = self.retrieval.retrieve_similar_items(
+            context.seed_items, k=self.retrieval_k) #A
         if debug:
             print(f"Retrieved {len(candidates)} candidates")
         candidates = self.filter.filter(candidates, context) #B
