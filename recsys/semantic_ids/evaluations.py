@@ -100,6 +100,8 @@ def analyze_codebook_usage(df, codebook_sizes):
     Checks if all codes in each codebook are being used.
     """
     import matplotlib.pyplot as plt
+
+    from recsys.utils.figures import save_figure
     
     for level in range(len(codebook_sizes)):
         # Extract codes at this level
@@ -124,7 +126,8 @@ def analyze_codebook_usage(df, codebook_sizes):
         plt.ylabel('Number of Items')
         plt.title(f'Code Usage Distribution - Level {level + 1}')
         plt.tight_layout()
-        plt.savefig(f'codebook_usage_level_{level + 1}.png')
+        save_figure(plt.gcf(), f'codebook_usage_level_{level + 1}', chapter=8,
+                    verbose=False)                      # -> figures/chapter-08/
         plt.close()
         
         # Warning for dead codes

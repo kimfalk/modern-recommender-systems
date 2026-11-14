@@ -24,16 +24,9 @@ mlflow = setup_mlflow("chapter-05-two-tower")
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
-def _repo_root() -> Path:
-    """The checkout this package lives in; the working directory when the
-    package was pip-installed (e.g. on Colab) and there is no checkout."""
-    root = Path(__file__).resolve().parents[2]
-    return root if (root / "notebooks").is_dir() else Path.cwd()
+from .paths import REPO_ROOT
 
-
-REPO_ROOT = _repo_root()
 TRACKING_DB = REPO_ROOT / "mlflow.db"
 ARTIFACT_ROOT = REPO_ROOT / "mlartifacts"
 
