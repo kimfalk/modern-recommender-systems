@@ -4,6 +4,11 @@ The models here are ordering-stage models: trained against ordering
 metrics and evaluated against the scored order from chapter 5.
 """
 
+# PyTorch before LightGBM: LightGBM then reuses PyTorch's OpenMP runtime.
+# Loaded the other way round, macOS ends up with two libomp copies in one
+# process, and PyTorch segfaults on its first parallel op.
+import torch  # noqa: F401
+
 from .features import (
   GENRES,
   ITEM_GENRE_COLS,
@@ -23,7 +28,13 @@ from .features import (
   attach_upstream_scores,
   build_feature_frame,
 )
-from .splits import per_user_temporal_slices, feature_history, request_times
+from .splits import (
+  per_user_temporal_slices,
+  feature_history,
+  request_times,
+  tuning_slices,
+  TUNING_CUTS,
+)
 from .evaluation import (
   ndcg_at_k,
   mrr,
@@ -40,6 +51,7 @@ from .evaluation import (
 from .lambdamart import (
   train_lambdamart,
   train_pointwise_gbdt,
+  iteration_logger,
   explain_ranker,
   feature_importance,
   lift_curve,

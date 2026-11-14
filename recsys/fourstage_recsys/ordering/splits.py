@@ -82,3 +82,28 @@ def feature_history(
 def request_times(future_positives: pd.DataFrame) -> pd.Series:
   """Per-user request time: the timestamp of the first held-out positive."""
   return future_positives.groupby("userId")["timestamp"].min()
+
+
+# Model selection uses the same split shifted one slice back in time:
+#
+#     [ tune_early (0-60%) | tune_labels (60-70%) | mid (70-80%) | late (80-100%) ]
+#
+# - Selection TRAINING rows: upstream fit on tune_early, features from
+#   history before tune_labels, labels = tune_labels.
+# - Selection VALIDATION rows: the ranker's training rows (upstream fit on
+#   early, labels = mid).
+#
+# Every candidate configuration is trained on one window and scored on the
+# next, the way the final model is trained on mid and tested on late. The
+# 0.7 and 0.8 cuts use the same arithmetic, so early/mid/late are unchanged.
+TUNING_CUTS = (0.6, 0.7, 0.8)
+
+
+def tuning_slices(
+  interactions: pd.DataFrame, min_interactions: int = 5
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+  """(tune_early, tune_labels): the 0-60% and 60-70% slices of each user."""
+  tune_early, tune_labels, _, _ = per_user_temporal_slices(
+    interactions, cuts=TUNING_CUTS, min_interactions=min_interactions
+  )
+  return tune_early, tune_labels

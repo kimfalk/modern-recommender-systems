@@ -225,3 +225,72 @@ def paired_bootstrap(
     "ci_high": float(hi),
     "n_users": int(len(diff)),
   }
+
+
+# ---------------------------------------------------------------------------
+# Vectorized scoring: the same numbers as evaluate_ranker, without the
+# per-user Python loop. Cross-validation scores thousands of model/fold
+# combinations, so it needs this; evaluate_ranker stays the readable version.
+# ---------------------------------------------------------------------------
+
+
+def ranks_within_user(frame: pd.DataFrame, scores: np.ndarray) -> pd.DataFrame:
+  """0-based rank of every row inside its user's list, highest score first.
+
+  Ties keep frame order, exactly like evaluate_ranker's stable sort, so
+  the two functions produce identical lists. Returns userId, relevant and
+  rank, row-aligned with `frame`.
+  """
+  scores = np.asarray(scores, dtype=float)
+  users = frame["userId"].to_numpy()
+  pos = np.arange(len(frame))
+  order = np.lexsort((pos, -scores, users))
+  sorted_users = users[order]
+  starts = np.r_[0, np.flatnonzero(sorted_users[1:] != sorted_users[:-1]) + 1]
+  group_start = np.repeat(starts, np.diff(np.r_[starts, len(order)]))
+  rank = np.empty(len(frame), dtype=np.int64)
+  rank[order] = np.arange(len(order)) - group_start
+  return pd.DataFrame(
+    {"userId": users, "relevant": frame["relevant"].to_numpy(), "rank": rank},
+    index=frame.index,
+  )
+
+
+def per_user_ndcg(
+  frame: pd.DataFrame,
+  scores: np.ndarray,
+  k: int = 10,
+  n_relevant: dict | None = None,
+) -> pd.Series:
+  """Per-user NDCG@k of the order `scores` induces; matches evaluate_ranker.
+
+  Binary relevance from frame["relevant"]; with `n_relevant` the ideal DCG
+  uses the user's full held-out count, as in evaluate_ranker.
+  """
+  r = ranks_within_user(frame, scores)
+  rel = (r["relevant"].to_numpy() > 0).astype(float)
+  gain = np.where(r["rank"].to_numpy() < k, rel / np.log2(r["rank"].to_numpy() + 2.0), 0.0)
+  dcg = pd.Series(gain, index=r["userId"].to_numpy()).groupby(level=0, sort=True).sum()
+  if n_relevant is None:
+    n_rel = pd.Series(rel, index=r["userId"].to_numpy()).groupby(level=0).sum()
+  else:
+    n_rel = pd.Series({u: n_relevant.get(u, 0) for u in dcg.index}, dtype=float)
+  discounts = np.cumsum(1.0 / np.log2(np.arange(2, k + 2)))
+  m = np.minimum(n_rel.reindex(dcg.index).to_numpy(), k).astype(int)
+  idcg = np.where(m > 0, discounts[np.maximum(m - 1, 0)], 0.0)
+  out = np.where(idcg > 0, dcg.to_numpy() / np.where(idcg > 0, idcg, 1.0), 0.0)
+  return pd.Series(out, index=dcg.index, name=f"ndcg@{k}")
+
+
+class PrecomputedScores:
+  """predict() that looks scores up by row index, for evaluate_ranker.
+
+  Lets a model be scored once (or averaged over seeds) and then measured
+  with evaluate_ranker's full metric set, including list divergence.
+  """
+
+  def __init__(self, scores: pd.Series):
+    self.scores = scores
+
+  def predict(self, X: pd.DataFrame) -> np.ndarray:
+    return self.scores.loc[X.index].to_numpy()

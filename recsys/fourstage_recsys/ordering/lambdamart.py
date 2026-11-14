@@ -17,6 +17,9 @@ the top of the list is `lambdarank_truncation_level` (LightGBM default 30).
 
 from __future__ import annotations
 
+import warnings
+from contextlib import contextmanager
+
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
@@ -31,14 +34,30 @@ GBDT_PARAMS = dict(
 )
 
 
+@contextmanager
+def _quiet_eval_set():
+  """LightGBM >= 4.7 renames eval_set to eval_X/eval_y; we keep eval_set so
+  every 4.x release works, and silence the rename warning."""
+  with warnings.catch_warnings():
+    warnings.filterwarnings("ignore", message="The argument 'eval_set' is deprecated")
+    yield
+
+
 def train_lambdamart(
   train_frame: pd.DataFrame,
   feature_cols: list[str],
   n_estimators: int = 600,
   truncation_level: int = 30,
   seed: int = 7,
+  eval_frame: pd.DataFrame | None = None,
+  callbacks: list | None = None,
 ) -> lgb.LGBMRanker:
-  """Listing 7.2: fit a LambdaMART ranker on per-user candidate groups."""
+  """Listing 7.2: fit a LambdaMART ranker on per-user candidate groups.
+
+  Pass `eval_frame` (held-out users) to track NDCG@10 per boosting round
+  on both the training rows and those users; `callbacks` receive them
+  (see iteration_logger). Monitoring only: nothing is early-stopped.
+  """
   train_frame = train_frame.sort_values("userId", kind="stable")  # A
   group_sizes = train_frame.groupby("userId", sort=True).size().to_numpy()  # B
 
@@ -49,11 +68,24 @@ def train_lambdamart(
     lambdarank_truncation_level=truncation_level,  # D
     random_state=seed,
   )
-  ranker.fit(
-    train_frame[feature_cols],
-    train_frame["relevant"],
-    group=group_sizes,  # E
-  )
+  X, y = train_frame[feature_cols], train_frame["relevant"]
+  eval_kw = {}
+  if eval_frame is not None:
+    eval_frame = eval_frame.sort_values("userId", kind="stable")
+    eval_kw = dict(
+      eval_set=[(X, y), (eval_frame[feature_cols], eval_frame["relevant"])],
+      eval_group=[group_sizes, eval_frame.groupby("userId", sort=True).size().to_numpy()],
+      eval_names=["train", "val"],
+      eval_at=[10],
+    )
+  with _quiet_eval_set():
+    ranker.fit(
+      X,
+      y,
+      group=group_sizes,  # E
+      callbacks=callbacks,
+      **eval_kw,
+    )
   return ranker
 
 
@@ -79,15 +111,47 @@ def train_pointwise_gbdt(
   feature_cols: list[str],
   n_estimators: int = 600,
   seed: int = 7,
+  eval_frame: pd.DataFrame | None = None,
+  callbacks: list | None = None,
 ):
-  """Same trees, pointwise loss: the missing corner of the loss x architecture grid."""
+  """Same trees, pointwise loss: the missing corner of the loss x architecture grid.
+
+  `eval_frame` adds per-round binary log loss on the training rows and on
+  those held-out rows, as in train_lambdamart.
+  """
   clf = lgb.LGBMClassifier(
     objective="binary",
     **{**GBDT_PARAMS, "n_estimators": n_estimators},
     random_state=seed,
   )
-  clf.fit(train_frame[feature_cols], train_frame["relevant"])
+  X, y = train_frame[feature_cols], train_frame["relevant"]
+  eval_kw = {}
+  if eval_frame is not None:
+    eval_kw = dict(
+      eval_set=[(X, y), (eval_frame[feature_cols], eval_frame["relevant"])],
+      eval_names=["train", "val"],
+    )
+  with _quiet_eval_set():
+    clf.fit(X, y, callbacks=callbacks, **eval_kw)
   return _RawScore(clf)
+
+
+def iteration_logger(on_iteration, every: int = 10):
+  """LightGBM callback: on_iteration(step, metrics) every `every` rounds.
+
+  Metric names come out as "<set>_<metric>", e.g. "val_ndcg_at_10" or
+  "train_binary_logloss", the same naming the DCN-v2 curves use, so the
+  notebook can send both to MLflow with one function. The last round is
+  always reported.
+  """
+  def _callback(env):
+    step = env.iteration + 1
+    if step % every and step != env.end_iteration:
+      return
+    on_iteration(step, {f"{data}_{name.replace('@', '_at_')}": float(value)
+                        for data, name, value, *_ in env.evaluation_result_list})
+  _callback.order = 30
+  return _callback
 
 
 def explain_ranker(
