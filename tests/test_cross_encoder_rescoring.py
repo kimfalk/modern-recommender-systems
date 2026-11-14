@@ -45,6 +45,7 @@ from recsys.fourstage_recsys.scoring.cross_encoder import (  # noqa: E402
 )
 from recsys.fourstage_recsys.scoring.cross_encoder_training import (  # noqa: E402
   build_training_rows,
+  fit_cross_encoder,
   item_feature_matrix,
   item_side_arrays,
   retrieve_candidates,
@@ -317,3 +318,34 @@ def test_evaluate_pipelines_filters_history_before_scoring():
   assert (
     summary.loc[NULL_ROW, "Recall@pool"] == summary.loc[RESCORED_ROW, "Recall@pool"]
   )
+
+
+def test_fit_cross_encoder_ignores_the_callers_random_state():
+  """Same seed, different global RNG state and freshly built models: identical
+  weights. (The one test here that trains: 2 epochs on 32 synthetic rows.)"""
+  rng = np.random.default_rng(0)
+  users = {
+    f"u{j}": torch.tensor(rng.normal(size=DIM), dtype=torch.float32) for j in range(4)
+  }
+  items = torch.tensor(rng.normal(size=(8, DIM)), dtype=torch.float32)
+  rows_u = [f"u{j % 4}" for j in range(32)]
+  rows_i = rng.integers(0, 8, 32)
+  rows_y = (rng.random(32) < 0.3).astype(np.float32)
+  weights = []
+  for state in (1, 999):
+    torch.manual_seed(state)  # a different "earlier cell" each time
+    torch.rand(state % 7 + 1)
+    model, _ = fit_cross_encoder(
+      CrossEncoderReranker(DIM, DIM, hidden_dim=4),
+      users,
+      items,
+      rows_u,
+      rows_i,
+      rows_y,
+      max_epochs=2,
+      batch_size=8,
+      seed=42,
+      verbose=False,
+    )
+    weights.append([p.detach().clone() for p in model.parameters()])
+  assert all(torch.equal(a, b) for a, b in zip(*weights, strict=True))

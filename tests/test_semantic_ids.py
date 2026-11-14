@@ -2,11 +2,19 @@
 Tests for semantic IDs implementation.
 """
 
-import pytest
-import torch
 import inspect
 import os
 import sys
+import warnings
+
+import torch
+
+try:
+    import pytest
+    HAS_PYTEST = True
+except ImportError:  # run_standalone_tests() works without pytest
+    pytest = None
+    HAS_PYTEST = False
 
 # Add project to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -162,7 +170,7 @@ class TestCacheDetection:
         
         if os.path.exists(cache_dir):
             if HAS_PYTEST:
-                pytest.warn(
+                warnings.warn(
                     f"__pycache__ directory exists at {cache_dir}. "
                     "Consider deleting it if experiencing issues with code updates."
                 )

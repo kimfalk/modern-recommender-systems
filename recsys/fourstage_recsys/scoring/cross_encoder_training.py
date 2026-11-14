@@ -215,9 +215,19 @@ def fit_cross_encoder(
   weights from the best epoch are kept. User feature rows are gathered per
   batch, so memory grows with the number of users, not rows.
 
+  Deterministic in ``seed``: the model's weights are re-initialized from it
+  (every submodule's ``reset_parameters``) and batches are shuffled with a
+  generator seeded from it, so the result does not depend on the caller's
+  random state -- e.g. on which notebook cells ran first. That also means a
+  model passed in is trained from scratch, not fine-tuned.
+
   Returns ``(model, history)`` with one dict per epoch.
   """
   torch.manual_seed(seed)
+  for module in model.modules():  # initial weights from `seed`, not from the caller
+    if hasattr(module, "reset_parameters"):
+      module.reset_parameters()
+  shuffle = torch.Generator().manual_seed(seed)
   user_order = sorted(set(users))
   user_pos = {u: i for i, u in enumerate(user_order)}
   user_matrix = torch.stack([user_features[u] for u in user_order])
@@ -233,7 +243,7 @@ def fit_cross_encoder(
   for epoch in range(max_epochs):
     t0 = time.perf_counter()
     model.train()
-    perm = torch.randperm(n)
+    perm = torch.randperm(n, generator=shuffle)
     total = 0.0
     for start in range(0, n, batch_size):
       idx = perm[start : start + batch_size]

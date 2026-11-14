@@ -2,34 +2,29 @@
 recsys/fourstage_recsys/scoring/cross_encoder.py
 ================================================
 Cross-encoder scoring for the retrieve-and-rerank pipeline (Chapter 5,
-Sections 5.3-5.4).
+Section 5.6).
 
-Contains the MLP cross-encoder (Listing 5.8) with its training helpers, the
-``CrossEncoderScoring`` stage (Listing 5.12), the ``CosineScoring`` baseline
-it is compared against, and the text-based ``TransformerCrossEncoder``
+Contains the MLP cross-encoder (Listing 5.8), the ``CrossEncoderScoring``
+stage that plugs it into the four-stage pipeline (Listing 5.12), and the
+text-based ``TransformerCrossEncoder`` with its ``TransformerScoring`` stage
 (Listings 5.9 and 5.13). The transformer classes import the ``transformers``
 library lazily, so this module works without it installed.
 
-Two refinements over the minimal chapter listings, both of which matter in
-production:
+The MLP input is ``[u, i, u * i]`` rather than the concatenation ``[u, i]``:
+a plain MLP struggles to even *represent* a multiplicative interaction like a
+dot product, so handing it the element-wise product lets the network start
+from the bi-encoder's answer and learn corrections to it. User and item
+features must therefore have the same dimension.
 
-  - **Explicit interaction features.** The MLP input is ``[u, i, u * i]`` --
-    a plain MLP on the concatenation ``[u, i]`` struggles to even
-    *represent* a multiplicative interaction like a dot product; handing it
-    the element-wise product lets the network start from the bi-encoder's
-    answer and learn corrections to it.
-  - **In-distribution negatives.** Training negatives are sampled partly
-    from each positive item's retrieval neighbors rather than the full
-    catalog. At serving time the reranker only ever sees candidates the
-    retrieval stage already liked; training it exclusively on random
-    negatives teaches a distinction every candidate it will ever score has
-    already passed.
+Training lives in ``cross_encoder_training``: time-split training rows built
+from the candidates retrieval actually returns, and ``fit_cross_encoder``
+with early stopping. ``recsys.evaluation.rescoring`` compares the rescored
+order with retrieval order and popularity order.
 
 Usage
 -----
 from recsys.fourstage_recsys.scoring.cross_encoder import (
-    CrossEncoderReranker, CrossEncoderScoring, CosineScoring,
-    build_cross_encoder_training, train_cross_encoder,
+    CrossEncoderReranker, CrossEncoderScoring,
     TransformerCrossEncoder, TransformerScoring,
 )
 """
@@ -38,7 +33,6 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-import numpy as np
 import torch
 import torch.nn as nn
 
@@ -78,75 +72,6 @@ class CrossEncoderReranker(nn.Module):
 #B A small interaction network scores the joint input
 #C Explicit interaction features -- see the module docstring
 #D One relevance logit per user-item pair
-
-
-def build_cross_encoder_training(train_items_by_user: dict,
-                                 neighbor_table: np.ndarray,
-                                 num_items: int,
-                                 num_hard: int = 2, num_random: int = 2,
-                                 seed: int = 42):
-    """Training triples (user_id, item_idx, label) with mixed negatives.
-
-    ``neighbor_table`` holds each item's retrieval neighbors (index space,
-    shape (num_items, n_neighbors)) -- the distribution the reranker will
-    actually see at serving time.
-    """
-    users, items, labels = [], [], []
-    rng = np.random.default_rng(seed)
-    n_neighbors = neighbor_table.shape[1]
-    for user_id, pos_items in train_items_by_user.items():
-        pos_set = set(pos_items)
-        for item in pos_items:
-            users.append(user_id); items.append(item); labels.append(1.0)
-            for _ in range(num_hard):                        #A
-                neg = int(neighbor_table[item][rng.integers(n_neighbors)])
-                tries = 0
-                while neg in pos_set and tries < 10:
-                    neg = int(neighbor_table[item][rng.integers(n_neighbors)])
-                    tries += 1
-                if neg in pos_set:
-                    neg = int(rng.integers(num_items))
-                users.append(user_id); items.append(neg); labels.append(0.0)
-            for _ in range(num_random):                      #B
-                neg = int(rng.integers(num_items))
-                while neg in pos_set:
-                    neg = int(rng.integers(num_items))
-                users.append(user_id); items.append(neg); labels.append(0.0)
-    return users, items, labels
-
-#A In-distribution negatives: items retrieval would surface, that the user did not choose
-#B Random negatives keep the broad structure
-
-
-def train_cross_encoder(model: CrossEncoderReranker,
-                        user_features: Dict, item_features: torch.Tensor,
-                        users: list, items: list, labels: list,
-                        epochs: int = 5, batch_size: int = 4096,
-                        lr: float = 1e-3, device: str = "cpu",
-                        verbose: bool = True) -> CrossEncoderReranker:
-    """Standard BCE training over the (user, item, label) triples."""
-    user_feat_matrix = torch.stack([user_features[u] for u in users])
-    item_feat_matrix = item_features[items]
-    label_tensor = torch.tensor(labels)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    bce = nn.BCEWithLogitsLoss()
-    model.to(device).train()
-    n = len(labels)
-    for epoch in range(epochs):
-        perm = torch.randperm(n)
-        total = 0.0
-        for start in range(0, n, batch_size):
-            idx = perm[start:start + batch_size]
-            optimizer.zero_grad()
-            logits = model(user_feat_matrix[idx].to(device),
-                           item_feat_matrix[idx].to(device))
-            loss = bce(logits, label_tensor[idx].to(device))
-            loss.backward()
-            optimizer.step()
-            total += loss.item() * len(idx)
-        if verbose:
-            print(f"epoch {epoch + 1}/{epochs} -- loss {total / n:.4f}")
-    return model
 
 
 # ---------------------------------------------------------------------------
@@ -191,29 +116,6 @@ class CrossEncoderScoring(Scorer):
 #D The user's features repeated across the batch
 #E One batched forward pass scores every candidate
 #F Scores are attached to the candidates and travel down the pipeline
-
-
-class CosineScoring(Scorer):
-    """The Chapter 2 baseline scorer: similarity to the user's mean embedding."""
-
-    def __init__(self, user_features: Dict, item_features: torch.Tensor,
-                 item_to_idx: dict):
-        self.user_features = user_features
-        self.item_features = torch.nn.functional.normalize(item_features, dim=-1)
-        self.item_to_idx = item_to_idx
-
-    @torch.no_grad()
-    def score(self, candidates: List[ScoredItem],
-              context: RecommendationContext) -> List[ScoredItem]:
-        if not candidates or context.user_id not in self.user_features:
-            return candidates
-        u = torch.nn.functional.normalize(
-            self.user_features[context.user_id], dim=-1)
-        idxs = [self.item_to_idx[c.item_id] for c in candidates]
-        scores = self.item_features[idxs] @ u
-        for item, s in zip(candidates, scores.tolist()):
-            item.scores["cosine"] = float(s)
-        return candidates
 
 
 # ---------------------------------------------------------------------------
