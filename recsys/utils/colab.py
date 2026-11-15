@@ -15,7 +15,7 @@ def is_colab():
 
 
 def setup_colab_environment(
-    repo_url='https://github.com/yourusername/modern-recommender-systems',
+    repo_url='https://github.com/kimfalk/modern-recommender-systems',
     branch='main',
     install_mode='pip'
 ):

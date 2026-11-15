@@ -11,9 +11,10 @@ Both models share the same Transformer backbone. They differ in:
 Usage
 -----
 from recsys.fourstage_recsys.retrieval.sequential import (
-    SASRec, BERT4Rec, gbce_loss, evaluate,
+    SASRec, BERT4Rec, gbce_loss,
     SASRecTrainDataset, BERT4RecTrainDataset, SequentialEvalDataset,
 )
+from recsys.evaluation.sequential import evaluate   # NDCG@k / HR@k, ablations
 
 model = SASRec(num_items=59047)
 # or
@@ -351,78 +352,6 @@ def gbce_loss(
 # B  Numerically stable form of −β · log σ(s⁺).
 # C  Numerically stable form of Σ −log(1 − σ(s⁻)), summed over negatives.
 # D  Exclude non-target positions after computing the loss; average over targets only.
-
-
-# ---------------------------------------------------------------------------
-# Evaluation (shared)
-# ---------------------------------------------------------------------------
-
-@torch.no_grad()
-def evaluate(
-    model: _SequentialBase,
-    eval_dataset: Dataset,
-    k: int = 10,
-    batch_size: int = 256,
-    device: torch.device | None = None,
-) -> dict[str, float]:
-    """
-    Full-catalog NDCG@k and HR@k on a held-out next-item target.
-
-    Scores are computed against the entire item embedding table, not a
-    sampled subset. See Krichene & Rendle (2020) for why sampled evaluation
-    produces inconsistent rankings across architectures.
-
-    Parameters
-    ----------
-    model        : trained SASRec or BERT4Rec.
-    eval_dataset : SequentialEvalDataset.
-    k            : cutoff for NDCG and HR.
-    batch_size   : inference batch size.
-    device       : if None, uses the model's current device.
-
-    Returns
-    -------
-    {"NDCG@k": float, "HR@k": float}
-    """
-    from torch.utils.data import DataLoader
-    import numpy as np
-
-    if device is None:
-        device = next(model.parameters()).device
-
-    model.eval()
-    loader = DataLoader(eval_dataset, batch_size=batch_size, shuffle=False)
-    ndcgs, hits = [], []
-
-    for seqs, targets in loader:
-        seqs, targets = seqs.to(device), targets.to(device)
-
-        if isinstance(model, BERT4Rec):
-            # Append [MASK] at inference — do NOT call mask_sequence here.
-            mask_col = torch.full(
-                (seqs.shape[0], 1), model.mask_token,
-                dtype=torch.long, device=device,
-            )
-            seqs = torch.cat([seqs, mask_col], dim=1)[:, -model.max_len:]
-
-        hidden     = model(seqs)
-        user_state = hidden[:, -1, :]
-        scores     = user_state @ model.item_emb.weight[:model.num_items + 1].T
-        scores[:, 0] = -float("inf")
-
-        topk    = torch.topk(scores, k, dim=1).indices
-        hit     = (topk == targets.unsqueeze(1))
-        rank    = hit.float().argmax(dim=1)
-        has_hit = hit.any(dim=1)
-        ndcg    = torch.where(
-            has_hit,
-            1.0 / torch.log2(rank.float() + 2),
-            torch.zeros_like(rank, dtype=torch.float),
-        )
-        ndcgs.extend(ndcg.cpu().tolist())
-        hits.extend(has_hit.float().cpu().tolist())
-
-    return {f"NDCG@{k}": float(np.mean(ndcgs)), f"HR@{k}": float(np.mean(hits))}
 
 
 # ---------------------------------------------------------------------------
