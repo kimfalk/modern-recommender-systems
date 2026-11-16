@@ -1,7 +1,7 @@
 # Modern Recommender Systems
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/kimfalk/modern-recommender-systems)
 
 Code examples and implementations for **"Modern Recommender Systems"** published by Manning Publications.
@@ -30,24 +30,40 @@ read more on manning.com
 
 ### Local Installation
 
+The project uses [uv](https://docs.astral.sh/uv/) to manage Python and the
+dependencies. `uv sync` creates `.venv/` with the exact versions in `uv.lock`.
+
 ```bash
+# Install uv (once): https://docs.astral.sh/uv/getting-started/installation/
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
 # Clone the repository
 git clone https://github.com/yourusername/modern-recommender-systems.git
 cd modern-recommender-systems
 
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install the package
-pip install -e .
+# Create .venv with the locked dependencies (plus pytest, ruff, nbstripout)
+uv sync
 
 # Launch Jupyter
-jupyter notebook
+uv run jupyter lab
 
-# To run the MLFlow browser version use
+# Browse experiment runs (one MLflow store for the whole repository)
+uv run mlflow ui --backend-store-uri sqlite:///mlflow.db
+```
 
-mlflow ui
+In VS Code or PyCharm, select `.venv/bin/python` as the interpreter.
+
+**Adding a dependency:** `uv add <package>` (or `uv add --dev <package>` for
+tools), then refresh the pip file with
+`uv export --format requirements-txt --no-hashes --no-dev --no-emit-project -o requirements.txt`.
+
+**Using pip instead:** `requirements.txt` holds the same pinned versions as
+`uv.lock`:
+
+```bash
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+pip install -e . --no-deps
 ```
 
 # API Keys Configuration
@@ -76,8 +92,9 @@ API_KEY: [https://developer.themoviedb.org/reference/authentication] - Sign up a
 ```bash
 modern-recsys/
 ├── README.md
-├── requirements.txt
-├── setup.py
+├── pyproject.toml          # dependencies (uv)
+├── uv.lock                 # exact versions
+├── requirements.txt        # pip export of uv.lock
 ├── recsys/
 │   ├── __init__.py
 │   ├── framework.py          # FourStageRecommender, interfaces
