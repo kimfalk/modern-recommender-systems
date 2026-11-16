@@ -71,8 +71,8 @@ class _SequentialBase(nn.Module):
         self.num_items = num_items
         self.max_len = max_len
         vocab_size = num_items + 1 + extra_tokens   # 0=pad, 1..num_items=items, then specials
-        self.item_emb = nn.Embedding(vocab_size, hidden_dim, padding_idx=0)  # A
-        self.pos_emb  = nn.Embedding(max_len, hidden_dim)                    # B
+        self.item_emb = nn.Embedding(vocab_size, hidden_dim, padding_idx=0)  #A
+        self.pos_emb  = nn.Embedding(max_len, hidden_dim)                    #B
         self.input_dropout = nn.Dropout(dropout)
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=hidden_dim,
@@ -80,9 +80,9 @@ class _SequentialBase(nn.Module):
             dim_feedforward=hidden_dim,
             dropout=dropout,
             batch_first=True,
-            norm_first=True,                                                  # C
+            norm_first=True,                                                  #C
         )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers, enable_nested_tensor=False)
         self.final_norm  = nn.LayerNorm(hidden_dim)
 
     def _encode(
@@ -108,26 +108,26 @@ class _SequentialBase(nn.Module):
         positions = positions.unsqueeze(0).expand(batch_size, -1)
         x = self.item_emb(sequences) + self.pos_emb(positions)
         x = self.input_dropout(x)
-        padding_mask = (sequences == 0)                                       # D
+        padding_mask = (sequences == 0)                                       #D
 
-        # E: A left-padded position has zero valid keys under causal masking —
+        # A left-padded position has zero valid keys under causal masking —
         # softmax over an all-masked row produces NaN. Across stacked layers
         # that NaN leaks into every position's output (0 * NaN = NaN in IEEE
         # float). Loop layers by hand and sanitize padding positions after
         # each one to prevent that leak from ever starting.
         for layer in self.transformer.layers:
             x = layer(x, src_mask=attn_mask, src_key_padding_mask=padding_mask)
-            x = x.masked_fill(padding_mask.unsqueeze(-1), 0.0)               # E
+            x = x.masked_fill(padding_mask.unsqueeze(-1), 0.0)               #E
         return self.final_norm(x)
 
     def forward(self, sequences: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError("Subclasses must implement forward().")
 
-# A  0 is the padding index; real items start at 1.
-# B  Learned positional embeddings, one per absolute position in the window.
-# C  Pre-norm layout (LayerNorm before attention) — more stable to train.
-# D  True wherever the sequence is padding; passed as src_key_padding_mask.
-# E  softplus(-0) = log(2), not zero — sanitize between layers, not before.
+#A Index 0 is padding; real items start at 1
+#B One learned embedding per position
+#C Pre-norm: LayerNorm before attention trains more stably
+#D True at padding positions
+#E Zero padding after every layer so NaNs cannot spread
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +155,7 @@ class SASRec(_SequentialBase):
         The user state for scoring is ``output[:, -1, :]``.
         """
         seq_len = sequences.shape[1]
-        causal_mask = torch.triu(                                             # A
+        causal_mask = torch.triu(                                             #A
             torch.ones(seq_len, seq_len, device=sequences.device, dtype=torch.bool),
             diagonal=1,
         )
@@ -165,14 +165,14 @@ class SASRec(_SequentialBase):
         """Return top-k item indices for each user in the batch."""
         with torch.no_grad():
             hidden     = self.forward(sequences)
-            user_state = hidden[:, -1, :]                                     # B
+            user_state = hidden[:, -1, :]                                     #B
             scores     = user_state @ self.item_emb.weight[:self.num_items + 1].T
-            scores[:, 0] = -float("inf")                                      # C
+            scores[:, 0] = -float("inf")                                      #C
         return torch.topk(scores, k, dim=1).indices
 
-# A  Causal mask: position i cannot attend to positions j > i.
-# B  The user state is the hidden vector at the last (rightmost) position.
-# C  Never recommend the padding token (index 0).
+#A Causal mask: position i cannot see positions after it
+#B The user state is the rightmost hidden vector
+#C Never recommend the padding token
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +222,7 @@ class BERT4Rec(_SequentialBase):
         (batch, seq_len, hidden_dim) — hidden states at every position.
         Prediction targets are the positions that carry a [MASK] token.
         """
-        return self._encode(sequences, attn_mask=None)                        # A
+        return self._encode(sequences, attn_mask=None)                        #A
 
     def mask_sequence(
         self,
@@ -253,17 +253,17 @@ class BERT4Rec(_SequentialBase):
         """
         non_pad    = (sequences != 0)
         rand       = torch.rand_like(sequences, dtype=torch.float)
-        cloze_mask = non_pad & (rand < self.mask_prob)                        # B
+        cloze_mask = non_pad & (rand < self.mask_prob)                        #B
 
         # Guarantee at least one masked position per sequence so the loss
         # is never zero for a user with a non-empty history.
-        empty_rows = cloze_mask.sum(dim=1) == 0                               # C
+        empty_rows = cloze_mask.sum(dim=1) == 0                               #C
         if empty_rows.any():
             last_real = (non_pad.cumsum(dim=1) * non_pad).argmax(dim=1)
-            cloze_mask[empty_rows, last_real[empty_rows]] = True              # C
+            cloze_mask[empty_rows, last_real[empty_rows]] = True              #C
 
         masked_seqs = sequences.clone()
-        masked_seqs[cloze_mask] = self.mask_token                             # D
+        masked_seqs[cloze_mask] = self.mask_token                             #D
         return masked_seqs, cloze_mask
 
     def recommend(self, sequences: torch.Tensor, k: int = 10) -> torch.Tensor:
@@ -279,21 +279,20 @@ class BERT4Rec(_SequentialBase):
             (batch_size, 1), self.mask_token,
             dtype=torch.long, device=sequences.device,
         )
-        augmented = torch.cat([sequences, mask_col], dim=1)[:, -self.max_len:]  # E
+        augmented = torch.cat([sequences, mask_col], dim=1)[:, -self.max_len:]  #E
         with torch.no_grad():
             hidden     = self.forward(augmented)
-            user_state = hidden[:, -1, :]                                       # F
+            user_state = hidden[:, -1, :]                                       #F
             scores     = user_state @ self.item_emb.weight[:self.num_items + 1].T
             scores[:, 0] = -float("inf")
         return torch.topk(scores, k, dim=1).indices
 
-# A  attn_mask=None — every position attends to every other; no causal constraint.
-# B  Only non-padding positions are eligible for masking.
-# C  Force at least one masked position so the loss never receives an empty mask.
-# D  Replace the selected positions with the [MASK] token in the input.
-# E  Trim to max_len — if the history was already full, the leftmost item is dropped.
-# F  The [MASK] token is at the rightmost position, so hidden[:, -1, :] is the
-#    user state — the same indexing as SASRec, but for a different reason.
+#A No causal mask: every position sees every other
+#B Only real items can be masked
+#C At least one masked position per row
+#D Replace the chosen positions with [MASK]
+#E Trim to max_len, dropping the oldest item if full
+#F The user state is read at the appended [MASK]
 
 
 # ---------------------------------------------------------------------------
@@ -339,19 +338,19 @@ def gbce_loss(
     """
     n_neg  = neg_scores.shape[-1]
     alpha  = n_neg / max(num_items - 1, 1)
-    beta   = alpha * (t * (1.0 - 1.0 / alpha) + 1.0 / alpha)                 # A
+    beta   = alpha * (t * (1.0 - 1.0 / alpha) + 1.0 / alpha)                 #A
 
-    pos_loss = beta * F.softplus(-pos_scores)                                 # B
-    neg_loss = F.softplus(neg_scores).sum(dim=-1)                             # C
+    pos_loss = beta * F.softplus(-pos_scores)                                 #B
+    neg_loss = F.softplus(neg_scores).sum(dim=-1)                             #C
     per_position = (pos_loss + neg_loss) / (n_neg + 1)
 
-    per_position = per_position * pos_mask.float()                            # D
-    return per_position.sum() / pos_mask.float().sum().clamp(min=1.0)         # D
+    per_position = per_position * pos_mask.float()                            #D
+    return per_position.sum() / pos_mask.float().sum().clamp(min=1.0)         #D
 
-# A  β interpolates between no correction (t=0, β=1) and full correction (t=1, β=α).
-# B  Numerically stable form of −β · log σ(s⁺).
-# C  Numerically stable form of Σ −log(1 − σ(s⁻)), summed over negatives.
-# D  Exclude non-target positions after computing the loss; average over targets only.
+#A β runs from 1 (t=0, no correction) to α (t=1)
+#B Stable form of −β · log σ(s⁺)
+#C Stable form of Σ −log(1 − σ(s⁻))
+#D Average over real targets only, after the loss
 
 
 # ---------------------------------------------------------------------------
@@ -421,12 +420,11 @@ class BERT4RecTrainDataset(Dataset):
 
     def __getitem__(self, idx: int):
         seq        = self.sequences[idx]
-        raw_seq    = torch.tensor(truncate_and_pad(seq, self.max_len), dtype=torch.long)  # A
+        raw_seq    = torch.tensor(truncate_and_pad(seq, self.max_len), dtype=torch.long)  #A
         neg_items  = torch.randint(1, self.num_items + 1, (self.max_len, self.n_neg))
         return raw_seq, neg_items
 
-# A  The full unmasked sequence — masking happens in the training loop via
-#    model.mask_sequence, not here.
+#A Unmasked; the training loop calls mask_sequence
 
 
 class SequentialEvalDataset(Dataset):

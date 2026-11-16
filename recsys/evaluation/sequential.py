@@ -90,19 +90,19 @@ def evaluate(
   ndcgs, hits = [], []
   for seqs, targets in loader:
     if history == "shuffled":
-      seqs = shuffle_history(seqs, rng)  # A
+      seqs = shuffle_history(seqs, rng)  #A
     elif history == "last_only":
-      seqs = last_item_only(seqs)  # B
+      seqs = last_item_only(seqs)  #B
     seqs, targets = seqs.to(device), targets.to(device)
 
-    if hasattr(model, "mask_token"):  # C
+    if hasattr(model, "mask_token"):  #C
       mask_col = torch.full(
         (seqs.shape[0], 1), model.mask_token, dtype=torch.long, device=device
       )
       seqs = torch.cat([seqs, mask_col], dim=1)[:, -model.max_len :]
 
-    user_state = model(seqs)[:, -1, :]  # D
-    scores = user_state @ model.item_emb.weight[: model.num_items + 1].T  # E
+    user_state = model(seqs)[:, -1, :]  #D
+    scores = user_state @ model.item_emb.weight[: model.num_items + 1].T  #E
     scores[:, 0] = -float("inf")
 
     topk = torch.topk(scores, k, dim=1).indices
@@ -119,9 +119,8 @@ def evaluate(
   return {f"NDCG@{k}": float(np.mean(ndcgs)), f"HR@{k}": float(np.mean(hits))}
 
 
-# A Ablation B: permute the real items; the padding stays where it is.
-# B Ablation C: keep only the rightmost (most recent) item.
-# C BERT4Rec predicts at an appended [MASK]; SASRec reads the last real position.
-# D The user state vector is the hidden state at the rightmost position.
-# E Scoring every item is one matrix multiplication against the embedding table
-#   (sliced to drop BERT4Rec's [MASK] row).
+#A Ablation B: shuffle the real items in place
+#B Ablation C: keep only the most recent item
+#C BERT4Rec predicts at an appended [MASK]
+#D The user state is the rightmost hidden vector
+#E Score every item, without BERT4Rec's [MASK] row
