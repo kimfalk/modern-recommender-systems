@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import os
 
-from .paths import REPO_ROOT
+from .paths import REPO_ROOT, display_path
 
 TRACKING_DB = REPO_ROOT / "mlflow.db"
 ARTIFACT_ROOT = REPO_ROOT / "mlartifacts"
@@ -42,6 +42,9 @@ def setup_mlflow(experiment: str, verbose: bool = True):
     New experiments get their artifacts under <repo>/mlartifacts/<experiment>,
     so logged files land in one place no matter where the notebook runs.
     """
+    # Recent MLflow versions log a hint with an absolute site-packages path;
+    # notebook outputs are committed, so keep it out of them.
+    os.environ.setdefault("MLFLOW_DISABLE_AGENT_HINT", "1")
     import mlflow
 
     uri = tracking_uri()
@@ -51,5 +54,7 @@ def setup_mlflow(experiment: str, verbose: bool = True):
             experiment, artifact_location=(ARTIFACT_ROOT / experiment).as_uri())
     mlflow.set_experiment(experiment)
     if verbose:
-        print(f"MLflow: experiment '{experiment}' -> {uri}")
+        shown = (f"sqlite:///{display_path(TRACKING_DB)}"
+                 if uri == f"sqlite:///{TRACKING_DB}" else uri)
+        print(f"MLflow: experiment '{experiment}' -> {shown}")
     return mlflow

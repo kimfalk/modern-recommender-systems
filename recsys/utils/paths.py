@@ -14,3 +14,16 @@ def _repo_root() -> Path:
 
 REPO_ROOT = _repo_root()
 FIGURES_DIR = REPO_ROOT / "figures"
+
+
+def display_path(path: Path | str) -> str:
+    """`path` relative to the repository root, for printing.
+
+    Notebook outputs are committed, so printed paths should read the same on
+    every machine instead of exposing the author's home directory.
+    """
+    path = Path(path)
+    try:
+        return path.resolve().relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return str(path)
