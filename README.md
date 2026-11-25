@@ -41,7 +41,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 git clone https://github.com/yourusername/modern-recommender-systems.git
 cd modern-recommender-systems
 
-# Create .venv with the locked dependencies (plus pytest, ruff, nbstripout)
+# Create .venv with the locked dependencies (plus pytest and ruff)
 uv sync
 
 # Launch Jupyter

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .paths import FIGURES_DIR
+from .paths import FIGURES_DIR, display_path
 
 
 def chapter_dir(chapter: int | str) -> Path:
@@ -46,5 +46,5 @@ def save_figure(fig, name: str, chapter: int | str,
     for path in paths:
         fig.savefig(path, dpi=dpi, bbox_inches="tight")
     if verbose:
-        print(f"Saved figure: {out / name}.{{{','.join(formats)}}}")
+        print(f"Saved figure: {display_path(out / name)}.{{{','.join(formats)}}}")
     return paths

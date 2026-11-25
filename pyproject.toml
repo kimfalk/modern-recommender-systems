@@ -54,7 +54,6 @@ dependencies = [
 dev = [
     "pytest>=8.0.0",
     "ruff>=0.6.0",
-    "nbstripout>=0.7.0",        # the git filter that strips notebook outputs
 ]
 
 [build-system]

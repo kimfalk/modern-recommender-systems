@@ -30,6 +30,9 @@ data/processed/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 notebooks/data/*
+# MovieLens downloaded next to a notebook (licence forbids redistribution)
+notebooks/**/ml-*/
+notebooks/**/ml-*.zip
 *.csv
 *.parquet
 *.pkl
